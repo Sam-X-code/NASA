@@ -1,0 +1,8 @@
+*.o
+*.d
+*.sym
+*.img
+*.asm
+kernel
+bootblock
+mkfs
