@@ -7,7 +7,7 @@
 
 // Disk layout:
 // [ boot block | super block | log | inode blocks |
-//                                          free bit map | data blocks]
+//                                          free bit map | effect table | data blocks]
 //
 // mkfs computes the super block and builds an initial file system. The
 // super block describes the disk layout:
@@ -19,6 +19,18 @@ struct superblock {
   uint logstart;     // Block number of first log block
   uint inodestart;   // Block number of first inode block
   uint bmapstart;    // Block number of first free map block
+
+  
+  uint effstart; //First effect-table block
+  uint effblocks; //number of effect-table blocks
+  
+};
+
+#define EFFECTBLOCKS 16 
+//why 16? block size:512B, entry size:16B, entries per block: 512/16=32, total cap: 16 * 32
+struct effect_entry{
+  unsigned long long key;
+  unsigned long long result;
 };
 
 #define NDIRECT 12

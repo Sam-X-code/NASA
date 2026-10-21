@@ -10,6 +10,8 @@ struct sleeplock;
 struct stat;
 struct superblock;
 
+
+
 // bio.c
 void            binit(void);
 struct buf*     bread(uint, uint);
@@ -52,6 +54,11 @@ struct inode*   nameiparent(char*, char*);
 int             readi(struct inode*, char*, uint, uint);
 void            stati(struct inode*, struct stat*);
 int             writei(struct inode*, char*, uint, uint);
+
+//exactly once effect table
+void            effect_init(void);
+int             effect_lookup(unsigned long long,unsigned long long*);
+int             effect_insert(unsigned long long,unsigned long long);
 
 // ide.c
 void            ideinit(void);

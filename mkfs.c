@@ -91,7 +91,7 @@ main(int argc, char *argv[])
   }
 
   // 1 fs block = 1 disk sector
-  nmeta = 2 + nlog + ninodeblocks + nbitmap;
+  nmeta = 2 + nlog + ninodeblocks + nbitmap + EFFECTBLOCKS; // boot, super, log blocks, inode blocks, bitmap blocks, effect-table blocks
   nblocks = FSSIZE - nmeta;
 
   sb.size = xint(FSSIZE);
@@ -101,6 +101,9 @@ main(int argc, char *argv[])
   sb.logstart = xint(2);
   sb.inodestart = xint(2+nlog);
   sb.bmapstart = xint(2+nlog+ninodeblocks);
+  
+  sb.effstart = xint(2 + nlog + ninodeblocks + nbitmap);
+  sb.effblocks = xint(EFFECTBLOCKS);
 
   printf("nmeta %d (boot, super, log blocks %u inode blocks %u, bitmap blocks %u) blocks %d total %d\n",
          nmeta, nlog, ninodeblocks, nbitmap, nblocks, FSSIZE);

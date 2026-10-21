@@ -407,6 +407,22 @@ forkret(void)
     first = 0;
     iinit(ROOTDEV);
     initlog(ROOTDEV);
+    effect_init();
+    
+    //mini test to check if effect table is working
+    unsigned long long result;
+  int ret;
+
+  //ret = effect_insert(12345ULL, 67890ULL);
+  //cprintf("EFFECT INSERT: %d\n", ret);
+
+  ret = effect_lookup(12345ULL, &result);
+  cprintf("EFFECT LOOKUP: %d, result=%l\n", ret, result);
+
+    if(ret == 0 && result == 67890ULL)
+    cprintf("PERSISTENCE TEST: PASS\n");
+  else
+    cprintf("PERSISTENCE TEST: FAIL\n");
   }
 
   // Return to "caller", actually trapret (see allocproc).
@@ -532,3 +548,4 @@ procdump(void)
     cprintf("\n");
   }
 }
+
