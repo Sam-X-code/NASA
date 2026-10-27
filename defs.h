@@ -59,6 +59,11 @@ int             writei(struct inode*, char*, uint, uint);
 void            effect_init(void);
 int             effect_lookup(unsigned long long,unsigned long long*);
 int             effect_insert(unsigned long long,unsigned long long);
+void            effect_tx_begin(void);
+void            effect_tx_end(void);
+int             effect_tx_lookup(unsigned long long key, unsigned long long * result);
+int             effect_tx_insert(unsigned long long key, unsigned long long result);
+int             effect_tx_has_space(unsigned long long key);
 
 // ide.c
 void            ideinit(void);

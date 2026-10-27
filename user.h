@@ -24,6 +24,7 @@ char* sbrk(int);
 int sleep(int);
 int uptime(void);
 int hello(void);
+int effect(unsigned long long key, int op, char * path, char * data, int n);
 
 // ulib.c
 int stat(const char*, struct stat*);
