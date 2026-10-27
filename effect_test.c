@@ -1,4 +1,3 @@
-
 #include "types.h"
 #include "stat.h"
 #include "user.h"
@@ -6,50 +5,40 @@
 #include "effect.h"
 
 int
-main(int argc, char *argv[])
+main(void)
 {
-  char buf[64];
-  int fd, r, n;
+  int r1, r2, fd, n;
+  char buf[16];
 
-  if(argc > 1){
-    // Run after reboot: retry the original key.
-    r = effect(12345ULL, EFFECT_APPEND,
-               "effect_data.txt", "hello", 5);
+  // First attempt: file does not exist.
+  r1 = effect(33333ULL, EFFECT_APPEND,
+              "missing.txt", "hello", 5);
 
-    fd = open("effect_data.txt", O_RDONLY);
-    if(fd < 0){
-      printf(1, "PERSISTENCE TEST: FAIL (open)\n");
-      exit();
-    }
-    n = read(fd, buf, sizeof(buf));
-    close(fd);
-
-    if(r == 5 && n == 5 &&
-       buf[0] == 'h' && buf[1] == 'e' &&
-       buf[2] == 'l' && buf[3] == 'l' &&
-       buf[4] == 'o')
-      printf(1, "PERSISTENCE TEST: PASS\n");
-    else
-      printf(1, "PERSISTENCE TEST: FAIL r=%d n=%d\n", r, n);
-
-    exit();
-  }
-
-  // First run: create file and append once.
-  fd = open("effect_data.txt", O_CREATE | O_WRONLY);
+  // Create the file afterwards using a normal syscall.
+  fd = open("missing.txt", O_CREATE | O_WRONLY);
   if(fd < 0){
-    printf(1, "SETUP FAIL\n");
+    printf(1, "TEST FAIL: create file\n");
     exit();
   }
   close(fd);
 
-  r = effect(12345ULL, EFFECT_APPEND,
-             "effect_data.txt", "hello", 5);
+  // Same key must return the original failure.
+  r2 = effect(33333ULL, EFFECT_APPEND,
+              "missing.txt", "hello", 5);
 
-  if(r == 5)
-    printf(1, "FIRST RUN: PASS — reboot now\n");
+  fd = open("missing.txt", O_RDONLY);
+  if(fd < 0){
+    printf(1, "TEST FAIL: reopen file\n");
+    exit();
+  }
+  n = read(fd, buf, sizeof(buf));
+  close(fd);
+
+  if(r1 == -1 && r2 == -1 && n == 0)
+    printf(1, "FAILURE RETRY TEST: PASS\n");
   else
-    printf(1, "FIRST RUN: FAIL r=%d\n", r);
+    printf(1, "FAILURE RETRY TEST: FAIL r1=%d r2=%d n=%d\n",
+           r1, r2, n);
 
   exit();
 }
