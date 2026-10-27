@@ -3,7 +3,7 @@
 // Mostly argument checking, since we don't trust
 // user code, and calls into file.c and fs.c.
 //
-
+#include "effect.h"
 #include "types.h"
 #include "defs.h"
 #include "param.h"
@@ -281,6 +281,85 @@ create(char *path, short type, short major, short minor)
 
   return ip;
 }
+
+
+int
+sys_effect(void)
+{
+  int keylo, keyhi, op, n, result;
+  unsigned long long key, saved;
+  char *path, *data;
+  struct inode *ip;
+
+  if(argint(0, &keylo) < 0 ||
+     argint(1, &keyhi) < 0 ||
+     argint(2, &op) < 0 ||
+     argstr(3, &path) < 0 ||
+     argint(5, &n) < 0)
+    return -1;
+
+  if(n < 0 || n > BSIZE)
+    return -1;
+
+  data = 0;
+  if(n > 0 && argptr(4, &data, n) < 0)
+    return -1;
+
+  key = ((unsigned long long)(uint)keyhi << 32) | (uint)keylo;
+
+  if(key == 0)
+    return -1;
+
+  effect_tx_begin();
+
+  // Duplicate key: return the original result without repeating work.
+  if(effect_tx_lookup(key, &saved) == 0){
+    effect_tx_end();
+    return (int)saved;
+  }
+
+  // Never perform an operation unless its result can be recorded.
+  if(effect_tx_has_space(key) < 0){
+    effect_tx_end();
+    return -1;
+  }
+
+  if(op == EFFECT_CREATE){
+    ip = create(path, T_FILE, 0, 0);
+    if(ip == 0){
+      result = -1;
+    } else {
+      iunlockput(ip);
+      result = 0;
+    }
+  } else if(op == EFFECT_APPEND){
+    ip = namei(path);
+
+    if(ip == 0){
+      result = -1;
+    } else {
+      ilock(ip);
+
+      if(ip->type != T_FILE){
+        iunlockput(ip);
+        result = -1;
+      } else {
+        result = writei(ip, data, ip->size, n);
+        iunlockput(ip);
+      }
+    }
+  } else {
+    result = -1;
+  }
+
+  // Save the result in the SAME transaction as the file operation.
+  if(effect_tx_insert(key, (unsigned long long)result) < 0)
+    panic("effect: insert failed");
+
+  effect_tx_end();
+  return result;
+}
+
 
 int
 sys_open(void)

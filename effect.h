@@ -1,0 +1,2 @@
+#define EFFECT_APPEND 1
+#define EFFECT_CREATE 2

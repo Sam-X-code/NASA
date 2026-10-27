@@ -184,6 +184,7 @@ UPROGS=\
 	_zombie\
 	_mytest\
 	_hello_test\
+	_effect_test\
 
 fs.img: mkfs README $(UPROGS)
 	./mkfs fs.img README $(UPROGS)
