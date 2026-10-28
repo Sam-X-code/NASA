@@ -31,6 +31,10 @@
 
 // Contents of the header block, used for both the on-disk header block
 // and to keep track in memory of logged block# before commit.
+
+extern int effect_crash_test;
+
+
 struct logheader {
   int n;
   int block[LOGSIZE];
@@ -197,7 +201,11 @@ commit()
     write_head();    // Write header to disk -- the real commit
 
     // CRASH TEST: simulate a crash after commit point.
-    panic("CRASH TEST: after commit header");
+    //panic("CRASH TEST: after commit header");
+    /*if(effect_crash_test){
+  effect_crash_test = 0;
+  panic("CRASH TEST: effect transaction committed");
+}*/
 
     install_trans(); // Now install writes to home locations
     log.lh.n = 0;

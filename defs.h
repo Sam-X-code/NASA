@@ -64,6 +64,7 @@ void            effect_tx_end(void);
 int             effect_tx_lookup(unsigned long long key, unsigned long long * result);
 int             effect_tx_insert(unsigned long long key, unsigned long long result);
 int             effect_tx_has_space(unsigned long long key);
+extern int      effect_crash_test;
 
 // ide.c
 void            ideinit(void);

@@ -9,6 +9,7 @@
 
 static struct superblock effect_sb;
 static struct sleeplock effect_lock;
+int effect_crash_test = 0;
 
 #define EFFECT_ENTRIES_PER_BLOCK (BSIZE / sizeof(struct effect_entry))
 

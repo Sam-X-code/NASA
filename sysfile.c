@@ -310,6 +310,12 @@ sys_effect(void)
   if(key == 0)
     return -1;
 
+
+  //phase 2 test
+  if(key == 44444ULL)
+  effect_crash_test = 1;
+  //--phase 2 test
+  
   effect_tx_begin();
 
   // Duplicate key: return the original result without repeating work.
