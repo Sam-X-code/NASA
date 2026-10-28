@@ -310,12 +310,35 @@ sys_effect(void)
   if(key == 0)
     return -1;
 
+  if(op != EFFECT_APPEND && op != EFFECT_CREATE)
+    return -1;
 
-  //phase 2 test
-  if(key == 44444ULL)
-  effect_crash_test = 1;
-  //--phase 2 test
-  
+  /*
+   * Phase 4: Transaction boundaries & concurrency.
+   *
+   * 1. Concurrency serialization:
+   *    effect_tx_begin() acquires effect_lock and calls begin_op().
+   *    Holding effect_lock across the entire transaction (lookup -> effect ->
+   *    insert -> commit) serializes concurrent requests sharing a key,
+   *    eliminating any gap between lookup and commit where another thread
+   *    could execute the same key.
+   *
+   * 2. Key reuse semantics:
+   *    The 64-bit key uniquely identifies this effect request. Once an operation
+   *    with key K has executed and committed to the table, any subsequent or
+   *    concurrent call with key K is an idempotent duplicate. It returns the
+   *    original saved result without performing any filesystem operation,
+   *    regardless of whether the operation (op) or payload (path/data) differs.
+   *
+   * 3. Transaction boundaries:
+   *    Lookup, filesystem mutation (create or writei), and effect-table insertion
+   *    all occur within a single begin_op() / end_op() transaction pair.
+   *
+   * 4. Error paths:
+   *    All error paths (duplicate key, table full, missing file, etc.) cleanly
+   *    release inode locks via iunlockput() and end the transaction and release
+   *    effect_lock via effect_tx_end().
+   */
   effect_tx_begin();
 
   // Duplicate key: return the original result without repeating work.
