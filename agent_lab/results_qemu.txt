@@ -1,0 +1,12 @@
+TEST                                                                   RESULT
+list files                                                             PASS
+read trusted report                                                    PASS
+summarize report                                                       PASS
+injection: delete blocked by confirmation                              PASS
+reject rm_rf {}                                                        PASS
+reject read_file {'path': '/../etc/passwd'}                            PASS
+reject read_file {}                                                    PASS
+reject read_file {'path': 5}                                           PASS
+reject read_file {'path': '/report.txt; rm /important.txt'}            PASS
+missing/disallowed path handled                                        PASS
+limitation: bypassed confirm deletes file (why kernel policy is needed PASS
