@@ -4,168 +4,162 @@
 #include "fcntl.h"
 #include "effect.h"
 
-// Test 1: Sequential exactly-once append
-void
-test_sequential_append(unsigned long long key)
+// Local memcmp implementation for xv6 user space
+static int
+memcmp(const void *v1, const void *v2, uint n)
 {
-  int r1, r2, fd, n;
-  char buf[16];
-
-  printf(1, "[TEST 1] Sequential exactly-once append... ");
-
-  unlink("test_seq.txt");
-  fd = open("test_seq.txt", O_CREATE | O_WRONLY);
-  if(fd < 0){
-    printf(1, "FAIL (create file)\n");
-    exit();
+  const uchar *s1 = (const uchar*)v1;
+  const uchar *s2 = (const uchar*)v2;
+  while(n-- > 0){
+    if(*s1 != *s2)
+      return *s1 - *s2;
+    s1++;
+    s2++;
   }
-  close(fd);
+  return 0;
+}
 
-  // First call
-  r1 = effect(key, EFFECT_APPEND, "test_seq.txt", "hello", 5);
-  if(r1 != 5){
-    printf(1, "FAIL (first append returned %d)\n", r1);
-    exit();
-  }
+// Helper to check file contents and length
+static int
+verify_file(const char *path, const char *expected_content, int expected_len)
+{
+  int fd, n;
+  char buf[64];
 
-  // Duplicate call with same key
-  r2 = effect(key, EFFECT_APPEND, "test_seq.txt", "hello", 5);
-  if(r2 != 5){
-    printf(1, "FAIL (duplicate append returned %d)\n", r2);
-    exit();
-  }
+  fd = open(path, O_RDONLY);
+  if(fd < 0)
+    return -1;
 
-  // Verify file content
-  fd = open("test_seq.txt", O_RDONLY);
-  if(fd < 0){
-    printf(1, "FAIL (reopen)\n");
-    exit();
-  }
   memset(buf, 0, sizeof(buf));
   n = read(fd, buf, sizeof(buf));
   close(fd);
 
-  if(n == 5 && strcmp(buf, "hello") == 0){
-    printf(1, "PASS\n");
-  } else {
-    printf(1, "FAIL (file len=%d content=%s)\n", n, buf);
-    exit();
-  }
+  if(n != expected_len)
+    return -2;
+
+  if(expected_len > 0 && memcmp(buf, expected_content, expected_len) != 0)
+    return -3;
+
+  return 0;
 }
 
-// Test 2: Key reuse with different payload
+// =====================================================================
+// Test 1: New Key & Duplicate Key (Sequential Append)
+// =====================================================================
 void
-test_key_reuse_different_payload(unsigned long long key)
-{
-  int r1, r2, fd, n;
-  char buf[32];
-
-  printf(1, "[TEST 2] Key reuse with different payload... ");
-
-  unlink("test_reuse_p.txt");
-  fd = open("test_reuse_p.txt", O_CREATE | O_WRONLY);
-  if(fd < 0){
-    printf(1, "FAIL (create file)\n");
-    exit();
-  }
-  close(fd);
-
-  // First call with "AAA"
-  r1 = effect(key, EFFECT_APPEND, "test_reuse_p.txt", "AAA", 3);
-  if(r1 != 3){
-    printf(1, "FAIL (first append returned %d)\n", r1);
-    exit();
-  }
-
-  // Same key with different payload "BBB"
-  // Defined behavior: key uniquely identifies transaction; returns saved result (3)
-  // and does not append "BBB".
-  r2 = effect(key, EFFECT_APPEND, "test_reuse_p.txt", "BBB", 3);
-  if(r2 != 3){
-    printf(1, "FAIL (key reuse returned %d instead of 3)\n", r2);
-    exit();
-  }
-
-  fd = open("test_reuse_p.txt", O_RDONLY);
-  if(fd < 0){
-    printf(1, "FAIL (reopen)\n");
-    exit();
-  }
-  memset(buf, 0, sizeof(buf));
-  n = read(fd, buf, sizeof(buf));
-  close(fd);
-
-  if(n == 3 && buf[0] == 'A' && buf[1] == 'A' && buf[2] == 'A'){
-    printf(1, "PASS\n");
-  } else {
-    printf(1, "FAIL (len=%d, content=%s)\n", n, buf);
-    exit();
-  }
-}
-
-// Test 3: Key reuse with different operation
-void
-test_key_reuse_different_op(unsigned long long key)
+test_new_and_duplicate_key(unsigned long long key)
 {
   int r1, r2, fd;
 
-  printf(1, "[TEST 3] Key reuse with different operation... ");
+  printf(1, "[TEST 1] New key & duplicate key append... ");
 
-  unlink("test_reuse_op.txt");
-  unlink("test_reuse_created.txt");
-
-  fd = open("test_reuse_op.txt", O_CREATE | O_WRONLY);
+  unlink("test_new_dup.txt");
+  fd = open("test_new_dup.txt", O_CREATE | O_WRONLY);
   if(fd < 0){
     printf(1, "FAIL (create file)\n");
     exit();
   }
   close(fd);
 
-  // First call: APPEND with key
-  r1 = effect(key, EFFECT_APPEND, "test_reuse_op.txt", "DATA", 4);
-  if(r1 != 4){
-    printf(1, "FAIL (first append returned %d)\n", r1);
+  // New key: first call must execute effect
+  r1 = effect(key, EFFECT_APPEND, "test_new_dup.txt", "hello", 5);
+  if(r1 != 5){
+    printf(1, "FAIL (new key append returned %d, expected 5)\n", r1);
     exit();
   }
 
-  // Reusing key with EFFECT_CREATE on a new path
-  // Defined behavior: returns saved result (4), does NOT create test_reuse_created.txt
-  r2 = effect(key, EFFECT_CREATE, "test_reuse_created.txt", 0, 0);
-  if(r2 != 4){
-    printf(1, "FAIL (key reuse returned %d instead of 4)\n", r2);
+  // Duplicate key: second call must return saved result without re-executing
+  r2 = effect(key, EFFECT_APPEND, "test_new_dup.txt", "hello", 5);
+  if(r2 != 5){
+    printf(1, "FAIL (duplicate key append returned %d, expected 5)\n", r2);
     exit();
   }
 
-  // Verify test_reuse_created.txt was NOT created
-  fd = open("test_reuse_created.txt", O_RDONLY);
-  if(fd >= 0){
-    close(fd);
-    printf(1, "FAIL (file was created despite key reuse)\n");
+  // Verify file has "hello" (length 5), not "hellohello" (length 10)
+  if(verify_file("test_new_dup.txt", "hello", 5) != 0){
+    printf(1, "FAIL (file content or length mismatch)\n");
     exit();
   }
 
   printf(1, "PASS\n");
 }
 
-// Test 4: Missing file error path and duplicate replay
+// =====================================================================
+// Test 2: Different Keys on Same File
+// =====================================================================
 void
-test_missing_file_error(unsigned long long key)
+test_different_keys(unsigned long long key1, unsigned long long key2)
 {
-  int r1, r2, fd, n;
-  char buf[16];
+  int r1, r2, fd;
 
-  printf(1, "[TEST 4] Missing file error & idempotency... ");
+  printf(1, "[TEST 2] Different keys sequential execution... ");
 
-  unlink("test_missing.txt");
+  unlink("test_diff_keys.txt");
+  fd = open("test_diff_keys.txt", O_CREATE | O_WRONLY);
+  if(fd < 0){
+    printf(1, "FAIL (create file)\n");
+    exit();
+  }
+  close(fd);
 
-  // First attempt: file does not exist -> fails with -1
-  r1 = effect(key, EFFECT_APPEND, "test_missing.txt", "hello", 5);
-  if(r1 != -1){
-    printf(1, "FAIL (append to missing file returned %d)\n", r1);
+  // First key: appends "foo" (3 bytes)
+  r1 = effect(key1, EFFECT_APPEND, "test_diff_keys.txt", "foo", 3);
+  if(r1 != 3){
+    printf(1, "FAIL (key1 returned %d)\n", r1);
     exit();
   }
 
-  // Now create the file afterwards using normal open()
+  // Different key: must execute its own effect and append "bar" (3 bytes)
+  r2 = effect(key2, EFFECT_APPEND, "test_diff_keys.txt", "bar", 3);
+  if(r2 != 3){
+    printf(1, "FAIL (key2 returned %d)\n", r2);
+    exit();
+  }
+
+  // File must contain "foobar" (length 6)
+  if(verify_file("test_diff_keys.txt", "foobar", 6) != 0){
+    printf(1, "FAIL (file does not contain foobar)\n");
+    exit();
+  }
+
+  // Replaying key1 and key2 must not append again
+  r1 = effect(key1, EFFECT_APPEND, "test_diff_keys.txt", "foo", 3);
+  r2 = effect(key2, EFFECT_APPEND, "test_diff_keys.txt", "bar", 3);
+  if(r1 != 3 || r2 != 3 || verify_file("test_diff_keys.txt", "foobar", 6) != 0){
+    printf(1, "FAIL (replay modified file)\n");
+    exit();
+  }
+
+  printf(1, "PASS\n");
+}
+
+// =====================================================================
+// Test 3: Missing Files Error Handling & Idempotency
+// =====================================================================
+void
+test_missing_file_error(unsigned long long key)
+{
+  int r1, r2, fd;
+
+  printf(1, "[TEST 3] Missing file error & duplicate retry... ");
+
+  unlink("test_missing.txt");
+
+  // Attempt to append to a file that does not exist -> fails (-1)
+  r1 = effect(key, EFFECT_APPEND, "test_missing.txt", "data", 4);
+  if(r1 != -1){
+    printf(1, "FAIL (append to missing file returned %d, expected -1)\n", r1);
+    exit();
+  }
+
+  // Duplicate retry with same key -> must return saved failure (-1)
+  r2 = effect(key, EFFECT_APPEND, "test_missing.txt", "data", 4);
+  if(r2 != -1){
+    printf(1, "FAIL (duplicate retry returned %d, expected -1)\n", r2);
+    exit();
+  }
+
+  // Create the file now
   fd = open("test_missing.txt", O_CREATE | O_WRONLY);
   if(fd < 0){
     printf(1, "FAIL (open create)\n");
@@ -173,137 +167,255 @@ test_missing_file_error(unsigned long long key)
   }
   close(fd);
 
-  // Same key must return the original failure (-1) without appending
-  r2 = effect(key, EFFECT_APPEND, "test_missing.txt", "hello", 5);
-  if(r2 != -1){
-    printf(1, "FAIL (retry returned %d instead of -1)\n", r2);
-    exit();
-  }
-
-  fd = open("test_missing.txt", O_RDONLY);
-  if(fd < 0){
-    printf(1, "FAIL (open read)\n");
-    exit();
-  }
-  n = read(fd, buf, sizeof(buf));
-  close(fd);
-
-  if(n != 0){
-    printf(1, "FAIL (file has %d bytes, expected 0)\n", n);
+  // Third retry with the same key must STILL return -1 and NOT append
+  r2 = effect(key, EFFECT_APPEND, "test_missing.txt", "data", 4);
+  if(r2 != -1 || verify_file("test_missing.txt", "", 0) != 0){
+    printf(1, "FAIL (replaying failed key modified newly created file)\n");
     exit();
   }
 
   printf(1, "PASS\n");
 }
 
-// Test 5: Invalid arguments error path
+// =====================================================================
+// Test 4: CREATE Operations (New file, Replay, Existing file, Bad path)
+// =====================================================================
 void
-test_invalid_args(unsigned long long key)
+test_create_operations(unsigned long long key_new, unsigned long long key_exist, unsigned long long key_bad)
 {
-  int r;
+  int r, fd;
 
-  printf(1, "[TEST 5] Invalid arguments validation... ");
+  printf(1, "[TEST 4] CREATE operations & error handling... ");
 
-  // Key == 0 is invalid
-  r = effect(0ULL, EFFECT_APPEND, "test_seq.txt", "abc", 3);
-  if(r != -1){
-    printf(1, "FAIL (key 0 accepted)\n");
-    exit();
-  }
+  unlink("test_create_new.txt");
 
-  // Invalid op code
-  r = effect(key, 999, "test_seq.txt", "abc", 3);
-  if(r != -1){
-    printf(1, "FAIL (invalid op accepted)\n");
-    exit();
-  }
-
-  // Payload size > BSIZE
-  r = effect(key + 1, EFFECT_APPEND, "test_seq.txt", "abc", 1000);
-  if(r != -1){
-    printf(1, "FAIL (payload > BSIZE accepted)\n");
-    exit();
-  }
-
-  // Negative payload size
-  r = effect(key + 2, EFFECT_APPEND, "test_seq.txt", "abc", -1);
-  if(r != -1){
-    printf(1, "FAIL (negative payload accepted)\n");
-    exit();
-  }
-
-  printf(1, "PASS\n");
-}
-
-// Test 6: CREATE operation and empty payload append
-void
-test_create_and_empty_payload(unsigned long long key1, unsigned long long key2)
-{
-  int r, fd, n;
-  char buf[8];
-
-  printf(1, "[TEST 6] CREATE operation & empty payload... ");
-
-  unlink("test_created.txt");
-
-  // CREATE file via effect()
-  r = effect(key1, EFFECT_CREATE, "test_created.txt", 0, 0);
+  // 1. Create a brand-new file -> returns 0
+  r = effect(key_new, EFFECT_CREATE, "test_create_new.txt", 0, 0);
   if(r != 0){
-    printf(1, "FAIL (CREATE returned %d)\n", r);
+    printf(1, "FAIL (CREATE new file returned %d)\n", r);
     exit();
   }
 
-  // Replay CREATE with same key: returns 0
-  r = effect(key1, EFFECT_CREATE, "test_created.txt", 0, 0);
-  if(r != 0){
-    printf(1, "FAIL (CREATE replay returned %d)\n", r);
-    exit();
-  }
-
-  // Verify file exists
-  fd = open("test_created.txt", O_RDONLY);
+  // Verify file was created
+  fd = open("test_create_new.txt", O_RDONLY);
   if(fd < 0){
     printf(1, "FAIL (created file not found)\n");
     exit();
   }
   close(fd);
 
-  // Append empty payload (0 bytes)
-  r = effect(key2, EFFECT_APPEND, "test_created.txt", "", 0);
+  // 2. Replay CREATE with same key -> returns 0
+  r = effect(key_new, EFFECT_CREATE, "test_create_new.txt", 0, 0);
   if(r != 0){
-    printf(1, "FAIL (empty append returned %d)\n", r);
+    printf(1, "FAIL (CREATE replay returned %d)\n", r);
     exit();
   }
 
-  // Verify file is still empty
-  fd = open("test_created.txt", O_RDONLY);
-  n = read(fd, buf, sizeof(buf));
-  close(fd);
-  if(n != 0){
-    printf(1, "FAIL (file size is %d, expected 0)\n", n);
+  // 3. CREATE on an already existing file with a NEW key -> returns 0 without error
+  r = effect(key_exist, EFFECT_CREATE, "test_create_new.txt", 0, 0);
+  if(r != 0){
+    printf(1, "FAIL (CREATE on existing file returned %d)\n", r);
+    exit();
+  }
+
+  // 4. CREATE on invalid path (non-existent parent directory) -> returns -1
+  r = effect(key_bad, EFFECT_CREATE, "nodir/test.txt", 0, 0);
+  if(r != -1){
+    printf(1, "FAIL (CREATE on bad path returned %d, expected -1)\n", r);
+    exit();
+  }
+
+  // Replay on invalid path -> returns -1
+  r = effect(key_bad, EFFECT_CREATE, "nodir/test.txt", 0, 0);
+  if(r != -1){
+    printf(1, "FAIL (CREATE bad path replay returned %d)\n", r);
     exit();
   }
 
   printf(1, "PASS\n");
 }
 
-// Test 7: CONCURRENCY CHECKPOINT (two concurrent calls sharing same key)
+// =====================================================================
+// Test 5: Empty Payloads (n == 0)
+// =====================================================================
 void
-test_concurrency_same_key(unsigned long long key)
+test_empty_payloads(unsigned long long key1, unsigned long long key2)
 {
-  int pid, fd, n;
-  int p[2];
-  char buf[16];
-  int r_parent, r_child;
+  int r, fd;
 
-  printf(1, "[TEST 7] Concurrency Checkpoint (two processes, same key)... ");
+  printf(1, "[TEST 5] Empty payloads (0 bytes)... ");
 
-  unlink("test_conc.txt");
-  fd = open("test_conc.txt", O_CREATE | O_WRONLY);
+  unlink("test_empty.txt");
+  fd = open("test_empty.txt", O_CREATE | O_WRONLY);
   if(fd < 0){
     printf(1, "FAIL (create file)\n");
     exit();
   }
+  write(fd, "initial", 7);
+  close(fd);
+
+  // Append empty payload (n = 0) to existing file
+  r = effect(key1, EFFECT_APPEND, "test_empty.txt", "", 0);
+  if(r != 0){
+    printf(1, "FAIL (empty append returned %d, expected 0)\n", r);
+    exit();
+  }
+
+  // Replay empty append
+  r = effect(key1, EFFECT_APPEND, "test_empty.txt", "", 0);
+  if(r != 0){
+    printf(1, "FAIL (empty append replay returned %d)\n", r);
+    exit();
+  }
+
+  // File contents must still be exactly "initial" (length 7)
+  if(verify_file("test_empty.txt", "initial", 7) != 0){
+    printf(1, "FAIL (file altered by empty append)\n");
+    exit();
+  }
+
+  // CREATE with 0 data and 0 length
+  unlink("test_empty_create.txt");
+  r = effect(key2, EFFECT_CREATE, "test_empty_create.txt", 0, 0);
+  if(r != 0 || verify_file("test_empty_create.txt", "", 0) != 0){
+    printf(1, "FAIL (empty CREATE failed)\n");
+    exit();
+  }
+
+  printf(1, "PASS\n");
+}
+
+// =====================================================================
+// Test 6: Invalid Inputs & Error Validation
+// =====================================================================
+void
+test_invalid_inputs(unsigned long long key)
+{
+  int r;
+
+  printf(1, "[TEST 6] Invalid inputs validation... ");
+
+  // 1. Key == 0 is forbidden
+  r = effect(0ULL, EFFECT_APPEND, "test_new_dup.txt", "abc", 3);
+  if(r != -1){
+    printf(1, "FAIL (key 0 accepted)\n");
+    exit();
+  }
+
+  // 2. Unknown op code
+  r = effect(key, 999, "test_new_dup.txt", "abc", 3);
+  if(r != -1){
+    printf(1, "FAIL (invalid op accepted)\n");
+    exit();
+  }
+
+  // 3. Negative op code
+  r = effect(key + 1, -1, "test_new_dup.txt", "abc", 3);
+  if(r != -1){
+    printf(1, "FAIL (negative op accepted)\n");
+    exit();
+  }
+
+  // 4. Payload size > BSIZE (512)
+  r = effect(key + 2, EFFECT_APPEND, "test_new_dup.txt", "abc", 513);
+  if(r != -1){
+    printf(1, "FAIL (payload > BSIZE accepted)\n");
+    exit();
+  }
+
+  // 5. Negative payload size
+  r = effect(key + 3, EFFECT_APPEND, "test_new_dup.txt", "abc", -1);
+  if(r != -1){
+    printf(1, "FAIL (negative payload accepted)\n");
+    exit();
+  }
+
+  // 6. Bad data pointer with n > 0
+  r = effect(key + 4, EFFECT_APPEND, "test_new_dup.txt", (char*)0xffffffff, 10);
+  if(r != -1){
+    printf(1, "FAIL (bad data pointer accepted)\n");
+    exit();
+  }
+
+  // 7. Bad path pointer
+  r = effect(key + 5, EFFECT_APPEND, (char*)0xffffffff, "abc", 3);
+  if(r != -1){
+    printf(1, "FAIL (bad path pointer accepted)\n");
+    exit();
+  }
+
+  printf(1, "PASS\n");
+}
+
+// =====================================================================
+// Test 7: Key Reuse with Different Payload & Operation
+// =====================================================================
+void
+test_key_reuse(unsigned long long key1, unsigned long long key2)
+{
+  int r1, r2, fd;
+
+  printf(1, "[TEST 7] Key reuse with different payload/op... ");
+
+  unlink("test_reuse_1.txt");
+  fd = open("test_reuse_1.txt", O_CREATE | O_WRONLY);
+  close(fd);
+
+  // Key1 first call with "AAA"
+  r1 = effect(key1, EFFECT_APPEND, "test_reuse_1.txt", "AAA", 3);
+  if(r1 != 3){
+    printf(1, "FAIL (first append returned %d)\n", r1);
+    exit();
+  }
+
+  // Key1 reuse with different payload "BBB": must return saved 3, not write BBB
+  r2 = effect(key1, EFFECT_APPEND, "test_reuse_1.txt", "BBB", 3);
+  if(r2 != 3 || verify_file("test_reuse_1.txt", "AAA", 3) != 0){
+    printf(1, "FAIL (key reuse with different payload altered file)\n");
+    exit();
+  }
+
+  // Key2 first call with APPEND
+  unlink("test_reuse_2.txt");
+  fd = open("test_reuse_2.txt", O_CREATE | O_WRONLY);
+  close(fd);
+  r1 = effect(key2, EFFECT_APPEND, "test_reuse_2.txt", "DATA", 4);
+  if(r1 != 4){
+    printf(1, "FAIL (first append returned %d)\n", r1);
+    exit();
+  }
+
+  // Key2 reuse with CREATE on another file: must return saved 4, not create new file
+  unlink("test_should_not_exist.txt");
+  r2 = effect(key2, EFFECT_CREATE, "test_should_not_exist.txt", 0, 0);
+  if(r2 != 4){
+    printf(1, "FAIL (key reuse with different op returned %d)\n", r2);
+    exit();
+  }
+  fd = open("test_should_not_exist.txt", O_RDONLY);
+  if(fd >= 0){
+    close(fd);
+    printf(1, "FAIL (new file was created on key reuse)\n");
+    exit();
+  }
+
+  printf(1, "PASS\n");
+}
+
+// =====================================================================
+// Test 8: Concurrency Checkpoint (Two Processes Racing on Same Key)
+// =====================================================================
+void
+test_concurrency_race(unsigned long long key)
+{
+  int pid, fd;
+  int p[2];
+  int r_parent, r_child;
+
+  printf(1, "[TEST 8] Concurrency race (two processes, same key)... ");
+
+  unlink("test_conc_race.txt");
+  fd = open("test_conc_race.txt", O_CREATE | O_WRONLY);
   close(fd);
 
   if(pipe(p) < 0){
@@ -318,66 +430,49 @@ test_concurrency_same_key(unsigned long long key)
   }
 
   if(pid == 0){
-    // Child process: call effect() with key
     close(p[0]);
-    r_child = effect(key, EFFECT_APPEND, "test_conc.txt", "X", 1);
+    r_child = effect(key, EFFECT_APPEND, "test_conc_race.txt", "W", 1);
     write(p[1], &r_child, sizeof(r_child));
     close(p[1]);
     exit();
   }
 
-  // Parent process: simultaneously call effect() with SAME key
   close(p[1]);
-  r_parent = effect(key, EFFECT_APPEND, "test_conc.txt", "X", 1);
+  r_parent = effect(key, EFFECT_APPEND, "test_conc_race.txt", "W", 1);
 
-  // Read child's result and wait for child
   r_child = 0;
   read(p[0], &r_child, sizeof(r_child));
   close(p[0]);
   wait();
 
   if(r_parent != 1 || r_child != 1){
-    printf(1, "FAIL (parent_ret=%d child_ret=%d, expected both 1)\n",
-           r_parent, r_child);
+    printf(1, "FAIL (parent=%d child=%d, expected both 1)\n", r_parent, r_child);
     exit();
   }
 
-  // Check file contents: MUST be exactly 1 byte ("X"), NOT 2 bytes ("XX")!
-  fd = open("test_conc.txt", O_RDONLY);
-  if(fd < 0){
-    printf(1, "FAIL (reopen)\n");
+  // File size MUST be exactly 1 byte ("W"), NOT 2 bytes ("WW")
+  if(verify_file("test_conc_race.txt", "W", 1) != 0){
+    printf(1, "FAIL (effect executed more than once concurrently)\n");
     exit();
   }
-  memset(buf, 0, sizeof(buf));
-  n = read(fd, buf, sizeof(buf));
-  close(fd);
 
-  if(n == 1 && buf[0] == 'X'){
-    printf(1, "PASS (effect executed exactly once)\n");
-  } else {
-    printf(1, "FAIL: both executed effect! (file len=%d content=%s)\n", n, buf);
-    exit();
-  }
+  printf(1, "PASS\n");
 }
 
-// Test 8: Multiple concurrent processes sharing same key
+// =====================================================================
+// Test 9: Multi-Worker Concurrency (4 Children Racing on Same Key)
+// =====================================================================
 void
-test_concurrency_multiple(unsigned long long key)
+test_multi_concurrency(unsigned long long key)
 {
   int pids[4];
   int pipes[4][2];
-  int i, fd, n;
-  char buf[16];
-  int r;
+  int i, fd, r;
 
-  printf(1, "[TEST 8] Multi-process concurrency (4 workers, same key)... ");
+  printf(1, "[TEST 9] Multi-worker concurrency (4 processes, same key)... ");
 
-  unlink("test_multi.txt");
-  fd = open("test_multi.txt", O_CREATE | O_WRONLY);
-  if(fd < 0){
-    printf(1, "FAIL (create file)\n");
-    exit();
-  }
+  unlink("test_multi_race.txt");
+  fd = open("test_multi_race.txt", O_CREATE | O_WRONLY);
   close(fd);
 
   for(i = 0; i < 4; i++){
@@ -395,7 +490,7 @@ test_concurrency_multiple(unsigned long long key)
     }
     if(pids[i] == 0){
       close(pipes[i][0]);
-      r = effect(key, EFFECT_APPEND, "test_multi.txt", "Z", 1);
+      r = effect(key, EFFECT_APPEND, "test_multi_race.txt", "M", 1);
       write(pipes[i][1], &r, sizeof(r));
       close(pipes[i][1]);
       exit();
@@ -403,7 +498,6 @@ test_concurrency_multiple(unsigned long long key)
     close(pipes[i][1]);
   }
 
-  // Wait for all 4 children and check their results
   for(i = 0; i < 4; i++){
     r = 0;
     read(pipes[i][0], &r, sizeof(r));
@@ -415,44 +509,43 @@ test_concurrency_multiple(unsigned long long key)
     }
   }
 
-  // File must contain exactly ONE "Z" (size 1)
-  fd = open("test_multi.txt", O_RDONLY);
-  if(fd < 0){
-    printf(1, "FAIL (reopen)\n");
+  // File size MUST be exactly 1 byte ("M"), NOT 4 bytes ("MMMM")
+  if(verify_file("test_multi_race.txt", "M", 1) != 0){
+    printf(1, "FAIL (multiple workers executed effect)\n");
     exit();
   }
-  memset(buf, 0, sizeof(buf));
-  n = read(fd, buf, sizeof(buf));
-  close(fd);
 
-  if(n == 1 && buf[0] == 'Z'){
-    printf(1, "PASS (all 4 received result, effect executed once)\n");
-  } else {
-    printf(1, "FAIL: multiple workers executed effect! (len=%d content=%s)\n", n, buf);
-    exit();
-  }
+  printf(1, "PASS\n");
 }
 
+// =====================================================================
+// Main Test Runner
+// =====================================================================
 int
 main(void)
 {
   unsigned long long base;
 
-  // Use uptime ticks to derive unique keys per run so tests are repeatable
-  // on a persistent filesystem image without colliding with prior runs.
+  // Use uptime ticks to derive unique non-colliding base keys per test run
   base = ((unsigned long long)uptime() + 1) * 100000ULL;
 
-  printf(1, "\n=== STARTING PHASE 4 EFFECT TESTS ===\n\n");
+  printf(1, "\n============================================\n");
+  printf(1, "   XV6 EFFECT() PHASE 5 FUNCTIONAL TESTS   \n");
+  printf(1, "============================================\n\n");
 
-  test_sequential_append(base + 1);
-  test_key_reuse_different_payload(base + 2);
-  test_key_reuse_different_op(base + 3);
-  test_missing_file_error(base + 4);
-  test_invalid_args(base + 5);
-  test_create_and_empty_payload(base + 10, base + 11);
-  test_concurrency_same_key(base + 20);
-  test_concurrency_multiple(base + 30);
+  test_new_and_duplicate_key(base + 10);
+  test_different_keys(base + 20, base + 21);
+  test_missing_file_error(base + 30);
+  test_create_operations(base + 40, base + 41, base + 42);
+  test_empty_payloads(base + 50, base + 51);
+  test_invalid_inputs(base + 60);
+  test_key_reuse(base + 70, base + 71);
+  test_concurrency_race(base + 80);
+  test_multi_concurrency(base + 90);
 
-  printf(1, "\n=== ALL PHASE 4 TESTS PASSED! ===\n\n");
+  printf(1, "\n============================================\n");
+  printf(1, "   ALL PHASE 5 FUNCTIONAL TESTS PASSED!    \n");
+  printf(1, "============================================\n\n");
+
   exit();
 }
