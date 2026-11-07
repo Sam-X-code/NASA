@@ -6,7 +6,7 @@
 
 // Test 1: Sequential exactly-once append
 void
-test_sequential_append(void)
+test_sequential_append(unsigned long long key)
 {
   int r1, r2, fd, n;
   char buf[16];
@@ -22,14 +22,14 @@ test_sequential_append(void)
   close(fd);
 
   // First call
-  r1 = effect(10001ULL, EFFECT_APPEND, "test_seq.txt", "hello", 5);
+  r1 = effect(key, EFFECT_APPEND, "test_seq.txt", "hello", 5);
   if(r1 != 5){
     printf(1, "FAIL (first append returned %d)\n", r1);
     exit();
   }
 
   // Duplicate call with same key
-  r2 = effect(10001ULL, EFFECT_APPEND, "test_seq.txt", "hello", 5);
+  r2 = effect(key, EFFECT_APPEND, "test_seq.txt", "hello", 5);
   if(r2 != 5){
     printf(1, "FAIL (duplicate append returned %d)\n", r2);
     exit();
@@ -55,7 +55,7 @@ test_sequential_append(void)
 
 // Test 2: Key reuse with different payload
 void
-test_key_reuse_different_payload(void)
+test_key_reuse_different_payload(unsigned long long key)
 {
   int r1, r2, fd, n;
   char buf[32];
@@ -71,7 +71,7 @@ test_key_reuse_different_payload(void)
   close(fd);
 
   // First call with "AAA"
-  r1 = effect(10002ULL, EFFECT_APPEND, "test_reuse_p.txt", "AAA", 3);
+  r1 = effect(key, EFFECT_APPEND, "test_reuse_p.txt", "AAA", 3);
   if(r1 != 3){
     printf(1, "FAIL (first append returned %d)\n", r1);
     exit();
@@ -80,7 +80,7 @@ test_key_reuse_different_payload(void)
   // Same key with different payload "BBB"
   // Defined behavior: key uniquely identifies transaction; returns saved result (3)
   // and does not append "BBB".
-  r2 = effect(10002ULL, EFFECT_APPEND, "test_reuse_p.txt", "BBB", 3);
+  r2 = effect(key, EFFECT_APPEND, "test_reuse_p.txt", "BBB", 3);
   if(r2 != 3){
     printf(1, "FAIL (key reuse returned %d instead of 3)\n", r2);
     exit();
@@ -105,7 +105,7 @@ test_key_reuse_different_payload(void)
 
 // Test 3: Key reuse with different operation
 void
-test_key_reuse_different_op(void)
+test_key_reuse_different_op(unsigned long long key)
 {
   int r1, r2, fd;
 
@@ -121,16 +121,16 @@ test_key_reuse_different_op(void)
   }
   close(fd);
 
-  // First call: APPEND with key 10003
-  r1 = effect(10003ULL, EFFECT_APPEND, "test_reuse_op.txt", "DATA", 4);
+  // First call: APPEND with key
+  r1 = effect(key, EFFECT_APPEND, "test_reuse_op.txt", "DATA", 4);
   if(r1 != 4){
     printf(1, "FAIL (first append returned %d)\n", r1);
     exit();
   }
 
-  // Reusing key 10003 with EFFECT_CREATE on a new path
+  // Reusing key with EFFECT_CREATE on a new path
   // Defined behavior: returns saved result (4), does NOT create test_reuse_created.txt
-  r2 = effect(10003ULL, EFFECT_CREATE, "test_reuse_created.txt", 0, 0);
+  r2 = effect(key, EFFECT_CREATE, "test_reuse_created.txt", 0, 0);
   if(r2 != 4){
     printf(1, "FAIL (key reuse returned %d instead of 4)\n", r2);
     exit();
@@ -149,7 +149,7 @@ test_key_reuse_different_op(void)
 
 // Test 4: Missing file error path and duplicate replay
 void
-test_missing_file_error(void)
+test_missing_file_error(unsigned long long key)
 {
   int r1, r2, fd, n;
   char buf[16];
@@ -159,7 +159,7 @@ test_missing_file_error(void)
   unlink("test_missing.txt");
 
   // First attempt: file does not exist -> fails with -1
-  r1 = effect(10004ULL, EFFECT_APPEND, "test_missing.txt", "hello", 5);
+  r1 = effect(key, EFFECT_APPEND, "test_missing.txt", "hello", 5);
   if(r1 != -1){
     printf(1, "FAIL (append to missing file returned %d)\n", r1);
     exit();
@@ -174,7 +174,7 @@ test_missing_file_error(void)
   close(fd);
 
   // Same key must return the original failure (-1) without appending
-  r2 = effect(10004ULL, EFFECT_APPEND, "test_missing.txt", "hello", 5);
+  r2 = effect(key, EFFECT_APPEND, "test_missing.txt", "hello", 5);
   if(r2 != -1){
     printf(1, "FAIL (retry returned %d instead of -1)\n", r2);
     exit();
@@ -198,7 +198,7 @@ test_missing_file_error(void)
 
 // Test 5: Invalid arguments error path
 void
-test_invalid_args(void)
+test_invalid_args(unsigned long long key)
 {
   int r;
 
@@ -212,21 +212,21 @@ test_invalid_args(void)
   }
 
   // Invalid op code
-  r = effect(10005ULL, 999, "test_seq.txt", "abc", 3);
+  r = effect(key, 999, "test_seq.txt", "abc", 3);
   if(r != -1){
     printf(1, "FAIL (invalid op accepted)\n");
     exit();
   }
 
   // Payload size > BSIZE
-  r = effect(10006ULL, EFFECT_APPEND, "test_seq.txt", "abc", 1000);
+  r = effect(key + 1, EFFECT_APPEND, "test_seq.txt", "abc", 1000);
   if(r != -1){
     printf(1, "FAIL (payload > BSIZE accepted)\n");
     exit();
   }
 
   // Negative payload size
-  r = effect(10007ULL, EFFECT_APPEND, "test_seq.txt", "abc", -1);
+  r = effect(key + 2, EFFECT_APPEND, "test_seq.txt", "abc", -1);
   if(r != -1){
     printf(1, "FAIL (negative payload accepted)\n");
     exit();
@@ -237,7 +237,7 @@ test_invalid_args(void)
 
 // Test 6: CREATE operation and empty payload append
 void
-test_create_and_empty_payload(void)
+test_create_and_empty_payload(unsigned long long key1, unsigned long long key2)
 {
   int r, fd, n;
   char buf[8];
@@ -247,14 +247,14 @@ test_create_and_empty_payload(void)
   unlink("test_created.txt");
 
   // CREATE file via effect()
-  r = effect(10008ULL, EFFECT_CREATE, "test_created.txt", 0, 0);
+  r = effect(key1, EFFECT_CREATE, "test_created.txt", 0, 0);
   if(r != 0){
     printf(1, "FAIL (CREATE returned %d)\n", r);
     exit();
   }
 
   // Replay CREATE with same key: returns 0
-  r = effect(10008ULL, EFFECT_CREATE, "test_created.txt", 0, 0);
+  r = effect(key1, EFFECT_CREATE, "test_created.txt", 0, 0);
   if(r != 0){
     printf(1, "FAIL (CREATE replay returned %d)\n", r);
     exit();
@@ -269,7 +269,7 @@ test_create_and_empty_payload(void)
   close(fd);
 
   // Append empty payload (0 bytes)
-  r = effect(10009ULL, EFFECT_APPEND, "test_created.txt", "", 0);
+  r = effect(key2, EFFECT_APPEND, "test_created.txt", "", 0);
   if(r != 0){
     printf(1, "FAIL (empty append returned %d)\n", r);
     exit();
@@ -289,7 +289,7 @@ test_create_and_empty_payload(void)
 
 // Test 7: CONCURRENCY CHECKPOINT (two concurrent calls sharing same key)
 void
-test_concurrency_same_key(void)
+test_concurrency_same_key(unsigned long long key)
 {
   int pid, fd, n;
   int p[2];
@@ -318,17 +318,17 @@ test_concurrency_same_key(void)
   }
 
   if(pid == 0){
-    // Child process: call effect() with key 20001
+    // Child process: call effect() with key
     close(p[0]);
-    r_child = effect(20001ULL, EFFECT_APPEND, "test_conc.txt", "X", 1);
+    r_child = effect(key, EFFECT_APPEND, "test_conc.txt", "X", 1);
     write(p[1], &r_child, sizeof(r_child));
     close(p[1]);
     exit();
   }
 
-  // Parent process: simultaneously call effect() with SAME key 20001
+  // Parent process: simultaneously call effect() with SAME key
   close(p[1]);
-  r_parent = effect(20001ULL, EFFECT_APPEND, "test_conc.txt", "X", 1);
+  r_parent = effect(key, EFFECT_APPEND, "test_conc.txt", "X", 1);
 
   // Read child's result and wait for child
   r_child = 0;
@@ -362,7 +362,7 @@ test_concurrency_same_key(void)
 
 // Test 8: Multiple concurrent processes sharing same key
 void
-test_concurrency_multiple(void)
+test_concurrency_multiple(unsigned long long key)
 {
   int pids[4];
   int pipes[4][2];
@@ -395,7 +395,7 @@ test_concurrency_multiple(void)
     }
     if(pids[i] == 0){
       close(pipes[i][0]);
-      r = effect(30001ULL, EFFECT_APPEND, "test_multi.txt", "Z", 1);
+      r = effect(key, EFFECT_APPEND, "test_multi.txt", "Z", 1);
       write(pipes[i][1], &r, sizeof(r));
       close(pipes[i][1]);
       exit();
@@ -436,16 +436,22 @@ test_concurrency_multiple(void)
 int
 main(void)
 {
+  unsigned long long base;
+
+  // Use uptime ticks to derive unique keys per run so tests are repeatable
+  // on a persistent filesystem image without colliding with prior runs.
+  base = ((unsigned long long)uptime() + 1) * 100000ULL;
+
   printf(1, "\n=== STARTING PHASE 4 EFFECT TESTS ===\n\n");
 
-  test_sequential_append();
-  test_key_reuse_different_payload();
-  test_key_reuse_different_op();
-  test_missing_file_error();
-  test_invalid_args();
-  test_create_and_empty_payload();
-  test_concurrency_same_key();
-  test_concurrency_multiple();
+  test_sequential_append(base + 1);
+  test_key_reuse_different_payload(base + 2);
+  test_key_reuse_different_op(base + 3);
+  test_missing_file_error(base + 4);
+  test_invalid_args(base + 5);
+  test_create_and_empty_payload(base + 10, base + 11);
+  test_concurrency_same_key(base + 20);
+  test_concurrency_multiple(base + 30);
 
   printf(1, "\n=== ALL PHASE 4 TESTS PASSED! ===\n\n");
   exit();
