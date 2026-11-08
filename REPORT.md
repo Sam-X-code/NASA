@@ -1,254 +1,221 @@
-# Exactly-Once Filesystem Modifications in xv6: Final Project Report
+# Exactly-Once Filesystem Mutations in xv6: Technical Design & Verification Report
 
 ---
 
-## 1. Executive Summary
+## 1. Problem Statement & Motivation
 
-This project implements an atomic, crash-consistent, and idempotent filesystem modification syscall—`effect()`—within the **MIT xv6** operating system (x86 32-bit).
+In standard UNIX/POSIX filesystems, operations such as write() and creat() are non-idempotent. If a process, network link, or machine fails midway through an operation, standard recovery cannot determine whether a client request was executed before the crash:
 
-In standard POSIX systems, operations such as `write()` and `creat()` are non-idempotent. In distributed systems or fault-tolerant kernels, if a client crashes or a network partition occurs after an operation has been executed but before the response is acknowledged, retrying the request risks duplicate mutations (e.g., duplicate appends or overwrites).
+- Retrying a failed append risks duplicating data (e.g., "AB" becomes "ABB").
+- Aborting on failure risks data loss (e.g., append was lost, leaving "A").
 
-By coupling a **persistent on-disk effect table** directly with xv6's **Write-Ahead Logging (WAL)** subsystem, this project guarantees **exactly-once execution semantics**:
-- Every operation is identified by an immutable 64-bit client-supplied `key`.
-- File mutations and the corresponding `(key, result)` record are committed in the **same atomic WAL transaction**.
-- Across any crash point—whether during staging, writing to the log area, before or after the commit header, or during home block installation—a reboot and client replay yields **strictly consistent state** (e.g., initial `"A"` + append `"B"` $\rightarrow$ strictly `"AB"`, never `"A"` and never `"ABB"`).
+This project designs and implements an atomic, crash-consistent, and idempotent filesystem modification system call, effect(), within the MIT xv6 operating system (32-bit x86). By integrating an on-disk persistent effect table directly into xv6 Write-Ahead Logging (WAL) subsystem, the system guarantees exactly-once execution semantics:
+
+1. Every operation carries an immutable 64-bit client token (key).
+2. The filesystem mutation and the corresponding (key, result) record are committed in the same atomic WAL transaction.
+3. Replaying a request after a crash at any point restores or preserves the intended state without data loss or duplicate execution.
 
 ---
 
-## 2. Architecture & Implementation Breakdown
+## 2. System Architecture
 
 ```
-+-----------------------------------------------------------------------------------+
-|                               USER SPACE                                          |
-|                                                                                   |
-|    effect(key, op, path, data, n)                crashtest / effect_test          |
-+-----------------------------------------------------------------------------------+
-                                       |
-                                       v  Syscall Trap (SYS_effect, SYS_crashat)
-+-----------------------------------------------------------------------------------+
-|                               KERNEL SPACE                                        |
-|                                                                                   |
-|  [sysfile.c] sys_effect()                                                         |
-|    |                                                                              |
-|    +--> effect_tx_begin() [Acquires effect_lock (sleeplock), calls begin_op()]    |
-|    |                                                                              |
-|    +--> effect_tx_lookup(key)                                                     |
-|    |      |-- If found: returns saved result immediately (IDEMPOTENT HIT)         |
-|    |                                                                              |
-|    +--> Filesystem Mutation:                                                      |
-|    |      |-- EFFECT_CREATE: calls create()                                       |
-|    |      |-- EFFECT_APPEND: calls writei()                                       |
-|    |                                                                              |
-|    +--> effect_tx_insert(key, result)                                             |
-|    |      |-- Writes to effect table buffer via log_write()                       |
-|    |                                                                              |
-|    +--> effect_tx_end() [Calls end_op() -> commit(), releases effect_lock]        |
-+-----------------------------------------------------------------------------------+
-                                       |
-                                       v
-+-----------------------------------------------------------------------------------+
-|                       WRITE-AHEAD LOGGING (log.c)                                 |
-|                                                                                   |
-|  commit():                                                                        |
-|    1. write_log():     Writes modified cache blocks to on-disk log area           |
-|    2. write_head():    ATOMIC COMMIT POINT (writes log header n > 0 to sector 2)  |
-|    3. install_trans(): Installs blocks from log to home disk locations            |
-|    4. write_head():    Clears log header (writes n = 0 to sector 2)               |
-+-----------------------------------------------------------------------------------+
-                                       |
-                                       v
-+-----------------------------------------------------------------------------------+
-|                             ON-DISK LAYOUT (fs.img)                               |
-|                                                                                   |
-| [Sector 0] Boot block                                                             |
-| [Sector 1] Superblock (ninodes, nblocks, logstart=2, effstart=59, effblocks=10)   |
-| [Sectors 2..31] Log blocks (Sector 2 = Log Header; Sectors 3..31 = Log Data)      |
-| [Sectors 32..57] Inode blocks                                                     |
-| [Sector 58] Bitmap block                                                          |
-| [Sectors 59..68] Persistent Effect Table (10 blocks = 320 entries)                |
-| [Sectors 69..999] Data blocks                                                     |
-+-----------------------------------------------------------------------------------+
++-------------------------------------------------------------------------------+
+|                                USER SPACE                                     |
+|                                                                               |
+|   effect(key, op, path, data, n)               crash_test.sh / crashtest      |
++-------------------------------------------------------------------------------+
+                                      |
+                                      v  Syscall Trap (SYS_effect, SYS_crashat)
++-------------------------------------------------------------------------------+
+|                                KERNEL SPACE                                   |
+|                                                                               |
+|   sys_effect() [sysfile.c]                                                    |
+|     |                                                                         |
+|     +--> effect_tx_begin()                                                    |
+|     |      - Acquires effect_lock (sleeplock)                                 |
+|     |      - Calls begin_op() (allocates WAL log reservation)                 |
+|     |                                                                         |
+|     +--> effect_tx_lookup(key)                                                |
+|     |      - Probes persistent table                                          |
+|     |      - If found: returns saved result immediately [IDEMPOTENT HIT]      |
+|     |                                                                         |
+|     +--> Filesystem Mutation                                                  |
+|     |      - EFFECT_CREATE: calls create()                                    |
+|     |      - EFFECT_APPEND: calls writei()                                    |
+|     |                                                                         |
+|     +--> effect_tx_insert(key, result)                                        |
+|     |      - Stages (key, result) via log_write()                             |
+|     |                                                                         |
+|     +--> effect_tx_end()                                                      |
+|            - Calls end_op() -> commit()                                       |
+|            - Releases effect_lock                                             |
++-------------------------------------------------------------------------------+
+                                      |
+                                      v
++-------------------------------------------------------------------------------+
+|                          WRITE-AHEAD LOGGING (log.c)                          |
+|                                                                               |
+|   commit():                                                                   |
+|     1. write_log():     Writes modified cache blocks to on-disk log area      |
+|     2. write_head():    ATOMIC COMMIT POINT (writes log header n > 0)         |
+|     3. install_trans(): Installs blocks from log to permanent home sectors    |
+|     4. write_head():    Clears log header (writes n = 0)                      |
++-------------------------------------------------------------------------------+
+                                      |
+                                      v
++-------------------------------------------------------------------------------+
+|                           ON-DISK LAYOUT (fs.img)                             |
+|                                                                               |
+|   Sector 0:       Boot Block                                                  |
+|   Sector 1:       Superblock (effstart=59, effblocks=10)                      |
+|   Sectors 2..31:  WAL Log (Sector 2 = Log Header; Sectors 3..31 = Log Blocks) |
+|   Sectors 32..57: Inode Blocks                                                |
+|   Sector 58:      Bitmap Block                                                |
+|   Sectors 59..68: Persistent Effect Table (10 blocks = 320 entries)           |
+|   Sectors 69..999: Data Blocks                                                |
++-------------------------------------------------------------------------------+
 ```
 
 ---
 
-## 3. Persistent Effect Table Specification
+## 3. Persistent On-Disk Effect Table
 
-### 3.1 Superblock Integration & Entry Format
-The superblock (`struct superblock` in [`fs.h`](file:///c:/Users/sacha/NASA/fs.h)) was extended with two fields:
-- `uint effstart`: The starting block number for the effect table (sector 59).
-- `uint effblocks`: The number of blocks allocated for the table (10 blocks).
+### 3.1 Superblock Metadata & Table Sizing
+The filesystem superblock (struct superblock in fs.h) was extended to record the table location:
+- uint effstart: Starting sector of the table (sector 59).
+- uint effblocks: Number of dedicated disk blocks (10 blocks).
 
-Each effect table entry is 16 bytes:
+Each table entry occupies 16 bytes:
 ```c
 struct effect_entry {
-  unsigned long long key;    // 8 bytes: 64-bit unique client token (0 = unused slot)
+  unsigned long long key;    // 8 bytes: unique 64-bit client token (0 = empty slot)
   unsigned long long result; // 8 bytes: saved return value (e.g. bytes written or 0)
 };
 ```
-With block size `BSIZE = 512`, each disk block stores:
-$$\text{Entries per block} = \frac{512}{16} = 32 \text{ entries}$$
-For 10 blocks, the table holds $10 \times 32 = 320$ persistent entries.
 
-### 3.2 Hash Indexing & Open Addressing
-Lookups and insertions in [`effect.c`](file:///c:/Users/sacha/NASA/effect.c) use an open-addressing hash table with linear probing:
-- $\text{Start index} = (\text{uint})\text{key} \pmod{\text{capacity}}$.
-- Probe sequence: $(\text{start} + i) \pmod{\text{capacity}}$ for $i \in [0, \text{capacity}-1]$.
-- Unused slots are identified by `key == 0`.
-- All writes to effect-table blocks are performed via `log_write(bp)`, ensuring they are strictly governed by the WAL.
+Capacity calculation:
+  Capacity = (512 bytes per block / 16 bytes per entry) × 10 blocks = 320 persistent entries
+
+### 3.2 Indexing & Open Addressing
+- Hash Function: start_index = (uint)key % 320
+- Collision Resolution: Linear probing with modular wraparound
+- WAL Safety: All modifications to table buffers are written via log_write(bp). Direct disk writes outside the log are strictly prohibited.
 
 ---
 
-## 4. Phase-by-Phase Implementation Summary
+## 4. Formal Proof of the Commit Point
 
-| Phase | Description | Deliverables & Verification |
-|---|---|---|
-| **Phase 1** | Understand WAL mechanics & transaction lifecycle | Analyzed `log.c`, `begin_op()`, `commit()`, `install_trans()`, `write_head()`. |
-| **Phase 2** | Persistent Effect Table | Extended `mkfs.c`, `fs.h`, `effect.h`, `effect.c`. Disk formatting initializes empty table. |
-| **Phase 3** | `effect()` System Call | Added `SYS_effect` (syscall 23). Handles 64-bit keys on 32-bit x86 via `(keyhi << 32) \| keylo`. |
-| **Phase 4** | Atomic Transaction Boundaries & Concurrency | `effect_lock` held across `lookup -> mutation -> insert -> commit`. Prevents TOCTOU races. |
-| **Phase 5** | Non-Crash Functional Tests | [`effect_test.c`](file:///c:/Users/sacha/NASA/effect_test.c): Tested new keys, duplicates, missing files, CREATE, empty payloads, concurrency. |
-| **Phase 6** | `crashat(n)` Crash Injection | Added `SYS_crashat` (syscall 24) in `log.c`. Injects panics across all WAL stages. |
-| **Phase 7** | Automated Crash/Reboot Harness | Built [`crash_test.sh`](file:///c:/Users/sacha/NASA/crash_test.sh) with QEMU automation, FIFO input, and state verification. |
-| **Phase 8** | Crash Point Sweep | Executed sweep across 15 crash points (1–13, 101, 102). 100% passed (`AB`, len=2). |
-| **Phase 9** | Write Quantification & Commit Argument | Measured disk write amplification and proved commit point atomicity. |
+A fundamental question in WAL design is identifying the exact boundary where an operation transitions from uncommitted (aborted on crash) to committed (replayed on reboot).
 
----
+```
+          PRE-COMMIT PHASE                          COMMIT POINT                      POST-COMMIT PHASE
+  [log_write] -------> [write_log] ---------> | write_head(n > 0) | ---------> [install_trans] -------> [write_head(0)]
+   In-Memory           Log on Disk                 Sector 2 on Disk             Home Blocks on Disk      Log Cleared
+  (Uncommitted)       (Uncommitted)                  (COMMITTED)                    (COMMITTED)          (COMMITTED)
+```
 
-## 5. The Commit-Point Argument (Formal Proof)
-
-A central requirement of write-ahead logging is establishing the exact instant an operation transitions from *uncommitted* to *committed*.
-
-### 5.1 Why `write_head()` is the Exact Commit Point
-In xv6, `write_head()` writes `struct logheader` to sector 2 on disk:
+### 4.1 Why write_head() is the Exact Commit Point
+In xv6, write_head() writes struct logheader to sector 2:
 ```c
 struct logheader {
   int n;
   int block[LOGSIZE];
 };
 ```
-At the hardware layer, IDE/SATA controllers guarantee that writing a single 512-byte sector is **atomic** (either the sector completes or it does not; partial sector writes are detected by CRC/ECC errors).
+At the hardware layer, IDE/SATA controllers guarantee that a single 512-byte sector write is atomic (it either completes fully or fails entirely; partial sector corruption is rejected by drive ECC).
 
-```
-                      PRE-COMMIT PHASE                          COMMIT POINT                       POST-COMMIT PHASE
-          [Staging] ------------------> [write_log()] --------> |write_head()| --------> [install_trans()] ------> [write_head(0)]
-On-Disk:  Log data: unwritten/stale     Log data: written       Header: n=3              Home blocks: written       Header: n=0
-Status:   UNCOMMITTED                   UNCOMMITTED             COMMITTED                COMMITTED                  COMMITTED
-Crash:    Reboot ignores log            Reboot ignores log      Reboot replays log       Reboot replays log         Reboot does nothing
-Replay:   Executes append               Executes append         Skips (table cached)     Skips (table cached)       Skips (table cached)
-```
+### 4.2 Behavior Across Crash Scenarios
 
-### 5.2 Crash Before `write_head()` ($n = 0$ on disk)
-- **State on Disk**: The log header sector retains $n = 0$ from the previous transaction. Even if some or all data blocks have been written to sectors 3..31 by `write_log()`, they are completely unreferenced. Home blocks (the file and effect table) have not been touched.
-- **Recovery on Reboot**: `initlog()` calls `recover_from_log()`. `read_head()` reads $n = 0$. `install_trans()` executes 0 iterations. No blocks are copied.
-- **Replay Behavior**: The client replays `effect(key, ...)`. The key is absent from the effect table. The operation executes normally, appending `"B"` and inserting `(key, result)`.
-- **Result**: Exactly `"AB"` ($len = 2$).
+| Scenario | State on Disk at Crash | Recovery on Reboot | Client Replay Outcome | Final File Content |
+|---|---|---|---|---|
+| Crash Before write_head() (Points 1–7, 101) | Header has n = 0. Staged log blocks are unreferenced. Home blocks untouched. | read_head() reads n = 0. install_trans() does 0 iterations. Transaction is completely discarded. | Key is absent from table. effect() executes the mutation and records the result. | "AB" (len = 2) |
+| Crash After write_head() (Points 8–13, 102) | Header has n = 3. All modified blocks are durable in the log area. | read_head() reads n = 3. install_trans() copies all 3 blocks to home sectors. Log is cleared. | Key is present in table. effect() finds cached result and skips re-execution. | "AB" (len = 2) |
 
-### 5.3 Crash After `write_head()` ($n > 0$ on disk)
-- **State on Disk**: Sector 2 contains $n = 3$ and block addresses `[data, inode, effect]`. All 3 blocks are durable in the log area. Even if the machine crashes before a single home block is copied by `install_trans()`, the transaction is durable.
-- **Recovery on Reboot**: `initlog()` calls `recover_from_log()`. `read_head()` reads $n = 3$. `install_trans()` copies all 3 blocks from the log area into their respective home sectors (updating `crash_file.txt` and the persistent effect table). `write_head()` then clears the log ($n = 0$).
-- **Replay Behavior**: The client replays `effect(key, ...)`. `effect_tx_lookup(key)` finds the entry in the persistent effect table and immediately returns `saved = 1` without repeating the append.
-- **Result**: Exactly `"AB"` ($len = 2$). Never `"ABB"`.
+Conclusion: Across every failure scenario, client re-execution guarantees exactly "AB" (len = 2), never "A" (lost write) and never "ABB" (duplicate write).
 
 ---
 
-## 6. Quantifying Disk Writes
+## 5. Disk Write Quantification & Overhead Analysis
 
-### 6.1 Mathematical Formulation of xv6 WAL Writes
-In xv6, any transaction logging $K$ distinct disk blocks undergoes the following physical writes during `commit()`:
-1. **Log Data Writes**: $K$ disk writes in `write_log()` to copy blocks to the log area.
-2. **Commit Header Write**: $1$ disk write in `write_head()` to write $n = K$ to disk (the commit point).
-3. **Home Block Writes**: $K$ disk writes in `install_trans()` to copy blocks to their home locations.
-4. **Log Clear Write**: $1$ disk write in `write_head()` to write $n = 0$ to disk.
+### 5.1 General Mathematical Formulation
+In xv6 write-ahead logging, every transaction modifying K distinct disk blocks performs:
+1. K disk writes in write_log() (copying cached blocks to the log area).
+2. 1 disk write in write_head() (writing the commit header with n = K).
+3. K disk writes in install_trans() (copying blocks to their home locations).
+4. 1 disk write in write_head() (writing the clear header with n = 0).
 
-Thus, the total number of physical disk writes $W(K)$ as a function of logged blocks $K$ is:
-$$W(K) = K + 1 + K + 1 = 2K + 2$$
+Formula:
+  Total Disk Writes: W(K) = K + 1 + K + 1 = 2K + 2
 
-### 6.2 Comparison: Normal Append vs. Effect Append
+### 5.2 Comparative Breakdown
 
-| Metric | Normal Append (`write`) | Effect Append (`effect`) | Delta ($\Delta$) |
-|---|---|---|---|
-| **Blocks Logged ($K$)** | **2** (Data block + Inode block) | **3** (Data block + Inode + Effect Table) | $+1$ block |
-| **`write_log()` Writes** | 2 | 3 | $+1$ write |
-| **Commit Header (`write_head`)** | 1 | 1 | $0$ writes |
-| **`install_trans()` Writes** | 2 | 3 | $+1$ write |
-| **Clear Header (`write_head`)** | 1 | 1 | $0$ writes |
-| **Total Disk Writes ($W$)** | **6 writes** | **8 writes** | **$+2$ disk writes** |
+| Operation Stage | Normal Append (write) | Effect Append (effect) | Overhead |
+|---|:---:|:---:|:---:|
+| Blocks Logged (K) | 2 (Data + Inode) | 3 (Data + Inode + Effect Table) | +1 block |
+| write_log() disk writes | 2 | 3 | +1 write |
+| Commit header write (write_head) | 1 | 1 | 0 writes |
+| install_trans() home writes | 2 | 3 | +1 write |
+| Log clear header write (write_head) | 1 | 1 | 0 writes |
+| Total Physical Disk Writes: W(K) | 6 writes | 8 writes | +2 disk writes |
 
-$$\text{Write Amplification Overhead} = \frac{8 - 6}{6} = 33.3\%$$
+Write Amplification:
+  Overhead = (8 - 6) / 6 = 33.3%
 
-### 6.3 Cost of Idempotent Replays
-When a client resubmits a previously completed request:
-- `effect_tx_lookup()` finds the key in the buffer cache (or reads 1 block from disk if uncached).
-- The transaction terminates immediately without calling `writei()` or `effect_tx_insert()`.
-- **Physical disk writes on replay = 0**.
-
----
-
-## 7. Crash Recovery Verification Results (Phase 8 Sweep)
-
-The automated test harness [`crash_test.sh`](file:///c:/Users/sacha/NASA/crash_test.sh) swept all 15 crash points. In every trial:
-- The initial file contained `"A"` ($len = 1$).
-- Crash was triggered during an append of `"B"`.
-- The system rebooted on the dirty image, replayed the exact same request, and inspected file contents.
-
-```
-================================================================================================
-                           XV6 CRASH RECOVERY SWEEP REPORT
-================================================================================================
-Initial State: crash_file.txt containing 'A'
-Operation:     effect(0xCAFE0000ULL + point, EFFECT_APPEND, 'crash_file.txt', 'B', 1)
-Expected:      Strictly 'AB' (len=2) for all crash points
-------------------------------------------------------------------------------------------------
-POINT  | PHASE        | RESULT   | FINAL CONTENT | RET   | CRASH LOCATION
-------------------------------------------------------------------------------------------------
-1      | PRE-COMMIT   | PASS     | AB (len=2)    | 1     | log_write 1 (staging data block in memory)
-2      | PRE-COMMIT   | PASS     | AB (len=2)    | 1     | log_write 2 (staging inode block in memory)
-3      | PRE-COMMIT   | PASS     | AB (len=2)    | 1     | log_write 3 (staging effect-table block in memory)
-4      | PRE-COMMIT   | PASS     | AB (len=2)    | 1     | write_log 1 (writing data block to disk log)
-5      | PRE-COMMIT   | PASS     | AB (len=2)    | 1     | write_log 2 (writing inode block to disk log)
-6      | PRE-COMMIT   | PASS     | AB (len=2)    | 1     | write_log 3 (writing effect block to disk log)
-7      | PRE-COMMIT   | PASS     | AB (len=2)    | 1     | commit: before write_head (PRE-COMMIT point)
-8      | POST-COMMIT  | PASS     | AB (len=2)    | 1     | commit: after write_head (POST-COMMIT / COMMIT POINT)
-9      | POST-COMMIT  | PASS     | AB (len=2)    | 1     | install_trans 1 (writing home data block)
-10     | POST-COMMIT  | PASS     | AB (len=2)    | 1     | install_trans 2 (writing home inode block)
-11     | POST-COMMIT  | PASS     | AB (len=2)    | 1     | install_trans 3 (writing home effect-table block)
-12     | POST-COMMIT  | PASS     | AB (len=2)    | 1     | commit: after install_trans, before log clear
-13     | POST-COMMIT  | PASS     | AB (len=2)    | 1     | commit: after log clear write_head
-101    | PRE-COMMIT   | PASS     | AB (len=2)    | 1     | commit: before write_head (PRE-COMMIT point)
-102    | POST-COMMIT  | PASS     | AB (len=2)    | 1     | commit: after write_head (POST-COMMIT / COMMIT POINT)
-------------------------------------------------------------------------------------------------
-Summary: 15 / 15 crash points passed.
-ALL CRASH POINTS PASSED! Exactly-once semantics verified across crashes.
-================================================================================================
-```
+### 5.3 Idempotent Replay Cost
+When an operation is replayed with a previously committed key:
+- effect_tx_lookup() finds the key in the buffer cache.
+- The system call returns the saved result immediately without opening a transaction.
+- Physical disk writes on replay = 0.
 
 ---
 
-## 8. Comprehensive Viva Examination Q&A
+## 6. Implementation Phases
 
-### Q1: Why must the effect table update occur in the SAME transaction as the file operation?
-**Answer**: If they were in separate transactions, a crash could occur between them:
-- If file mutation commits first and the system crashes before the effect table commits, the client replaying the request will perform the mutation a second time ($\rightarrow$ `"ABB"`, duplicate write).
-- If the effect table commits first and the system crashes before the file mutation commits, the client replaying will believe the operation succeeded, but the file was never modified ($\rightarrow$ `"A"`, lost write).
-Atomic inclusion in the same transaction guarantees that both or neither take effect.
+| Phase | Milestone | Core Implementation |
+|:---:|---|---|
+| 1 | WAL Lifecycle Analysis | Detailed review of log.c, begin_op(), commit(), and install_trans(). |
+| 2 | Persistent Effect Table | Superblock metadata in fs.h, disk layout in mkfs.c, table logic in effect.c. |
+| 3 | effect() Syscall | sys_effect() in sysfile.c, 64-bit key marshaling via (keyhi << 32) \| keylo. |
+| 4 | Atomic Boundaries & Concurrency | effect_lock held across lookup -> mutation -> insert -> commit to prevent TOCTOU races. |
+| 5 | Non-Crash Functional Tests | Comprehensive test suite in effect_test.c (new key, duplicate, CREATE, missing files, concurrency). |
+| 6 | Crash Injection (crashat) | Syscall in log.c triggering panics across log staging, header commit, and home installation. |
+| 7 | Crash/Reboot Harness | Automated script crash_test.sh with FIFO input management and multi-boot coordination. |
+| 8 | Automated Crash Sweep | Automated testing across all 15 crash points with full state verification. |
+| 9 | Evaluation & Reporting | Mathematical write quantification, formal commit-point proof, and final documentation. |
 
-### Q2: How are 64-bit keys handled on 32-bit x86 xv6?
-**Answer**: In 32-bit x86 xv6, `argint()` retrieves 32-bit words from the trap frame. A 64-bit key occupies two 32-bit stack slots (`keylo` at argument 0 and `keyhi` at argument 1). The kernel reconstructs the full 64-bit integer using:
-```c
-key = ((unsigned long long)(uint)keyhi << 32) | (uint)keylo;
-```
-User-space prototypes in [`user.h`](file:///c:/Users/sacha/NASA/user.h) pass `unsigned long long key` directly, which the compiler naturally splits across two 32-bit registers/stack slots.
+---
 
-### Q3: What happens if a client submits an existing key with different parameters (different file or payload)?
-**Answer**: In distributed systems and idempotent RPC theory, the key represents an **immutable request identity token**. Once key $K$ has executed and committed, any subsequent invocation with key $K$ is an idempotent duplicate. It returns the previously recorded return code without re-executing, regardless of whether the arguments differ. This was validated in `effect_test.c` (Test 6).
+## 7. Crash Recovery Sweep Results
 
-### Q4: How does the system handle concurrent calls with the same key?
-**Answer**: A time-of-check to time-of-use (TOCTOU) race could occur if process 1 looks up key $K$, finds nothing, and begins appending, while process 2 simultaneously looks up key $K$ before process 1 commits.
-To prevent this, `effect_tx_begin()` acquires a dedicated `effect_lock` (sleeplock) before calling `begin_op()`. This lock is held continuously across `lookup -> mutation -> insert -> commit()`. Process 2 is blocked until Process 1 has fully committed, at which point Process 2's lookup immediately discovers the entry and returns the cached result.
+The test harness (crash_test.sh) executed an automated sweep across all 15 crash injection points. In each trial, crash_file.txt was initialized with "A", an append of "B" was injected with a crash at the target point, the system rebooted on the dirty image, and the request was replayed.
 
-### Q5: Why is `write_head()` considered the single atomic commit point?
-**Answer**: `write_head()` writes the 512-byte `logheader` to sector 2. Disk sector writes are atomic at the drive controller boundary. If sector 2 contains $n > 0$, the recovery algorithm on boot treats the entire set of logged blocks as committed and reinstalls them. If sector 2 contains $n = 0$, recovery ignores the log area. Thus, the completion of this single sector write irrevocably commits the transaction.
+| Point | Phase | Target Location | Outcome | Final File | Return Code | Verification |
+|:---:|:---:|---|:---:|:---:|:---:|:---:|
+| 1 | PRE-COMMIT | log_write 1: staging data block in memory | PASS | AB (len = 2) | 1 | Clean Rollback -> Replay Appended |
+| 2 | PRE-COMMIT | log_write 2: staging inode block in memory | PASS | AB (len = 2) | 1 | Clean Rollback -> Replay Appended |
+| 3 | PRE-COMMIT | log_write 3: staging effect-table block in memory | PASS | AB (len = 2) | 1 | Clean Rollback -> Replay Appended |
+| 4 | PRE-COMMIT | write_log 1: writing data block to log area | PASS | AB (len = 2) | 1 | Clean Rollback -> Replay Appended |
+| 5 | PRE-COMMIT | write_log 2: writing inode block to log area | PASS | AB (len = 2) | 1 | Clean Rollback -> Replay Appended |
+| 6 | PRE-COMMIT | write_log 3: writing effect block to log area | PASS | AB (len = 2) | 1 | Clean Rollback -> Replay Appended |
+| 7 | PRE-COMMIT | commit: before write_head (uncommitted) | PASS | AB (len = 2) | 1 | Clean Rollback -> Replay Appended |
+| 8 | POST-COMMIT | commit: after write_head (COMMIT POINT) | PASS | AB (len = 2) | 1 | WAL Redo Recovery -> Cached Return |
+| 9 | POST-COMMIT | install_trans 1: writing home data block | PASS | AB (len = 2) | 1 | WAL Redo Recovery -> Cached Return |
+| 10 | POST-COMMIT | install_trans 2: writing home inode block | PASS | AB (len = 2) | 1 | WAL Redo Recovery -> Cached Return |
+| 11 | POST-COMMIT | install_trans 3: writing home effect block | PASS | AB (len = 2) | 1 | WAL Redo Recovery -> Cached Return |
+| 12 | POST-COMMIT | commit: after install, before log clear | PASS | AB (len = 2) | 1 | WAL Redo Recovery -> Cached Return |
+| 13 | POST-COMMIT | commit: after log clear write_head | PASS | AB (len = 2) | 1 | Durable on Disk -> Cached Return |
+| 101 | PRE-COMMIT | Named Hook: immediate pre-commit | PASS | AB (len = 2) | 1 | Clean Rollback -> Replay Appended |
+| 102 | POST-COMMIT | Named Hook: immediate post-commit | PASS | AB (len = 2) | 1 | WAL Redo Recovery -> Cached Return |
 
-### Q6: What is the write overhead of adding the effect table to the WAL?
-**Answer**: Exactly **2 additional disk writes** per transaction. A normal append writes 6 sectors (2 log + 1 header + 2 home + 1 clear header). An effect append writes 8 sectors (3 log + 1 header + 3 home + 1 clear header). When duplicate requests are replayed, the overhead is **0 writes** because the kernel returns the cached result without opening a WAL transaction.
+Summary: 15 / 15 crash points passed. Exactly-once semantics verified across all stages of transaction execution.
+
+---
+
+## 8. Conclusion
+
+By coupling an on-disk effect table directly with xv6 Write-Ahead Logging subsystem and holding an atomic lock boundary across lookup, file mutation, table insertion, and commit:
+1. Atomicity: Either both the filesystem mutation and the effect record commit, or neither does.
+2. Crash Consistency: The physical sector write in write_head() provides an unambiguous, atomic commit point.
+3. Idempotence: Replaying requests after any system failure incurs zero duplicate writes and zero lost updates.
+4. Efficiency: Guarantees are provided with an overhead of exactly 2 additional disk writes per transaction, and 0 writes on subsequent replays.
