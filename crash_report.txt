@@ -1,0 +1,25 @@
+================================================================================================
+                           XV6 CRASH RECOVERY SWEEP REPORT                                      
+================================================================================================
+Date: Sun Nov  8 09:45:57 UTC 2026
+Initial State: crash_file.txt containing 'A'
+Operation: effect(0xCAFE0000ULL + point, EFFECT_APPEND, 'crash_file.txt', 'B', 1)
+Expected Outcome: Exactly 'AB' after reboot & replay for every crash point
+------------------------------------------------------------------------------------------------
+POINT  | PHASE        | RESULT   | FINAL CONTENT | RET   | CRASH LOCATION
+------------------------------------------------------------------------------------------------
+1      | PRE-COMMIT   | PASS     | AB (len=2)    | 1     | log_write 1 (staging data block in memory)
+2      | PRE-COMMIT   | PASS     | AB (len=2)    | 1     | log_write 2 (staging inode block in memory)
+3      | PRE-COMMIT   | PASS     | AB (len=2)    | 1     | log_write 3 (staging effect-table block in memory)
+4      | PRE-COMMIT   | PASS     | AB (len=2)    | 1     | write_log 1 (writing data block to disk log)
+5      | PRE-COMMIT   | PASS     | AB (len=2)    | 1     | write_log 2 (writing inode block to disk log)
+6      | PRE-COMMIT   | PASS     | AB (len=2)    | 1     | write_log 3 (writing effect block to disk log)
+7      | PRE-COMMIT   | PASS     | AB (len=2)    | 1     | commit: before write_head (PRE-COMMIT point)
+8      | POST-COMMIT  | PASS     | AB (len=2)    | 1     | commit: after write_head (POST-COMMIT / COMMIT POINT)
+9      | POST-COMMIT  | PASS     | AB (len=2)    | 1     | install_trans 1 (writing home data block)
+10     | POST-COMMIT  | PASS     | AB (len=2)    | 1     | install_trans 2 (writing home inode block)
+11     | POST-COMMIT  | PASS     | AB (len=2)    | 1     | install_trans 3 (writing home effect-table block)
+12     | POST-COMMIT  | PASS     | AB (len=2)    | 1     | commit: after install_trans, before log clear
+13     | POST-COMMIT  | PASS     | AB (len=2)    | 1     | commit: after log clear write_head
+101    | PRE-COMMIT   | PASS     | AB (len=2)    | 1     | commit: before write_head (PRE-COMMIT point)
+102    | POST-COMMIT  | PASS     | AB (len=2)    | 1     | commit: after write_head (POST-COMMIT / COMMIT POINT)
