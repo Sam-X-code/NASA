@@ -22,3 +22,4 @@
 #define SYS_close  21
 #define SYS_hello  22
 #define SYS_effect 23
+#define SYS_crashat 24

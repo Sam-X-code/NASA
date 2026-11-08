@@ -185,6 +185,7 @@ UPROGS=\
 	_mytest\
 	_hello_test\
 	_effect_test\
+	_crashtest\
 
 fs.img: mkfs README $(UPROGS)
 	./mkfs fs.img README $(UPROGS)

@@ -25,6 +25,7 @@ int sleep(int);
 int uptime(void);
 int hello(void);
 int effect(unsigned long long key, int op, char * path, char * data, int n);
+int crashat(int);
 
 // ulib.c
 int stat(const char*, struct stat*);
