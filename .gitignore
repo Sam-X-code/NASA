@@ -6,3 +6,5 @@
 kernel
 bootblock
 mkfs
+fs.img.clean
+crash_logs/

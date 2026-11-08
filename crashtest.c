@@ -4,14 +4,25 @@
 #include "fcntl.h"
 #include "effect.h"
 
-#define TEST_KEY 0xCAFEULL
+#define TEST_BASE_KEY 0xCAFE0000ULL
 #define TEST_FILE "crash_file.txt"
 
 static void
 usage(void)
 {
-  printf(1, "Usage: crashtest <init|run <n>|replay|check>\n");
+  printf(1, "Usage: crashtest <init [point]|run <point>|replay [point]|check>\n");
   exit();
+}
+
+static unsigned long long
+get_key(int argc, char *argv[], int idx)
+{
+  if(argc > idx){
+    int p = atoi(argv[idx]);
+    if(p > 0)
+      return TEST_BASE_KEY + (unsigned long long)p;
+  }
+  return 0xCAFEULL;
 }
 
 int
@@ -19,6 +30,7 @@ main(int argc, char *argv[])
 {
   int fd, r, n;
   char buf[32];
+  unsigned long long key;
 
   if(argc < 2)
     usage();
@@ -48,16 +60,19 @@ main(int argc, char *argv[])
       exit();
     }
     point = atoi(argv[2]);
-    printf(1, "CRASHTEST: arming crashat(%d) and executing append 'B'...\n", point);
+    key = get_key(argc, argv, 2);
+    printf(1, "CRASHTEST: arming crashat(%d) [key=0x%x%x] and executing append 'B'...\n",
+           point, (uint)(key >> 32), (uint)key);
     crashat(point);
-    r = effect(TEST_KEY, EFFECT_APPEND, TEST_FILE, "B", 1);
+    r = effect(key, EFFECT_APPEND, TEST_FILE, "B", 1);
     printf(1, "CRASHTEST: completed without crash! (ret=%d)\n", r);
     exit();
   }
 
   if(strcmp(argv[1], "replay") == 0){
     // Replay the exact same request with fixed key and payload "B"
-    r = effect(TEST_KEY, EFFECT_APPEND, TEST_FILE, "B", 1);
+    key = get_key(argc, argv, 2);
+    r = effect(key, EFFECT_APPEND, TEST_FILE, "B", 1);
     printf(1, "REPLAY_RET: %d\n", r);
 
     fd = open(TEST_FILE, O_RDONLY);
