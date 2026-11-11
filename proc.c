@@ -6,6 +6,7 @@
 #include "x86.h"
 #include "proc.h"
 #include "spinlock.h"
+#include "security.h"
 
 struct {
   struct spinlock lock;
@@ -88,6 +89,7 @@ allocproc(void)
 found:
   p->state = EMBRYO;
   p->pid = nextpid++;
+  p->agent_ctx = 0;
 
   release(&ptable.lock);
 
@@ -141,6 +143,7 @@ userinit(void)
 
   safestrcpy(p->name, "initcode", sizeof(p->name));
   p->cwd = namei("/");
+  p->agent_ctx = security_context();
 
   // this assignment to p->state lets other cores
   // run this process. the acquire forces the above
@@ -198,6 +201,7 @@ fork(void)
   }
   np->sz = curproc->sz;
   np->parent = curproc;
+  np->agent_ctx = curproc->agent_ctx;
   *np->tf = *curproc->tf;
 
   // Clear %eax so that fork returns 0 in the child.
@@ -551,4 +555,3 @@ procdump(void)
     cprintf("\n");
   }
 }
-

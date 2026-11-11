@@ -123,10 +123,15 @@ sys_link(void)
 
   if(argstr(0, &old) < 0 || argstr(1, &new) < 0)
     return -1;
-
+  security_enter();
+  if(security_is_tainted()){
+    security_exit();
+    return -1;
+  }
   begin_op();
   if((ip = namei(old)) == 0){
     end_op();
+    security_exit();
     return -1;
   }
 
@@ -134,6 +139,7 @@ sys_link(void)
   if(ip->type == T_DIR){
     iunlockput(ip);
     end_op();
+    security_exit();
     return -1;
   }
 
@@ -153,6 +159,7 @@ sys_link(void)
 
   end_op();
 
+  security_exit();
   return 0;
 
 bad:
@@ -161,6 +168,7 @@ bad:
   iupdate(ip);
   iunlockput(ip);
   end_op();
+  security_exit();
   return -1;
 }
 
@@ -191,10 +199,16 @@ sys_unlink(void)
 
   if(argstr(0, &path) < 0)
     return -1;
+  security_enter();
+  if(security_is_tainted()){
+    security_exit();
+    return -1;
+  }
 
   begin_op();
   if((dp = nameiparent(path, name)) == 0){
     end_op();
+    security_exit();
     return -1;
   }
 
@@ -230,11 +244,13 @@ sys_unlink(void)
 
   end_op();
 
+  security_exit();
   return 0;
 
 bad:
   iunlockput(dp);
   end_op();
+  security_exit();
   return -1;
 }
 
@@ -264,6 +280,7 @@ create(char *path, short type, short major, short minor)
   ip->major = major;
   ip->minor = minor;
   ip->nlink = 1;
+  ip->trust = type == T_FILE ? UNTRUSTED : TRUSTED;
   iupdate(ip);
 
   if(type == T_DIR){  // Create . and .. entries.
@@ -313,6 +330,8 @@ sys_effect(void)
   if(op != EFFECT_APPEND && op != EFFECT_CREATE)
     return -1;
 
+  security_enter();
+
   /*
    * Phase 4: Transaction boundaries & concurrency.
    *
@@ -344,12 +363,14 @@ sys_effect(void)
   // Duplicate key: return the original result without repeating work.
   if(effect_tx_lookup(key, &saved) == 0){
     effect_tx_end();
+    security_exit();
     return (int)saved;
   }
 
   // Never perform an operation unless its result can be recorded.
   if(effect_tx_has_space(key) < 0){
     effect_tx_end();
+    security_exit();
     return -1;
   }
 
@@ -386,6 +407,7 @@ sys_effect(void)
     panic("effect: insert failed");
 
   effect_tx_end();
+  security_exit();
   return result;
 }
 
@@ -401,12 +423,15 @@ sys_open(void)
   if(argstr(0, &path) < 0 || argint(1, &omode) < 0)
     return -1;
 
+  if(omode & O_CREATE)
+    security_enter();
   begin_op();
 
   if(omode & O_CREATE){
     ip = create(path, T_FILE, 0, 0);
     if(ip == 0){
       end_op();
+      security_exit();
       return -1;
     }
   } else {
@@ -427,10 +452,14 @@ sys_open(void)
       fileclose(f);
     iunlockput(ip);
     end_op();
+    if(omode & O_CREATE)
+      security_exit();
     return -1;
   }
   iunlock(ip);
   end_op();
+  if(omode & O_CREATE)
+    security_exit();
 
   f->type = FD_INODE;
   f->ip = ip;
@@ -446,13 +475,18 @@ sys_mkdir(void)
   char *path;
   struct inode *ip;
 
+  if(argstr(0, &path) < 0)
+    return -1;
+  security_enter();
   begin_op();
-  if(argstr(0, &path) < 0 || (ip = create(path, T_DIR, 0, 0)) == 0){
+  if((ip = create(path, T_DIR, 0, 0)) == 0){
     end_op();
+    security_exit();
     return -1;
   }
   iunlockput(ip);
   end_op();
+  security_exit();
   return 0;
 }
 
@@ -463,16 +497,20 @@ sys_mknod(void)
   char *path;
   int major, minor;
 
-  begin_op();
-  if((argstr(0, &path)) < 0 ||
+  if(argstr(0, &path) < 0 ||
      argint(1, &major) < 0 ||
-     argint(2, &minor) < 0 ||
-     (ip = create(path, T_DEV, major, minor)) == 0){
+     argint(2, &minor) < 0)
+    return -1;
+  security_enter();
+  begin_op();
+  if((ip = create(path, T_DEV, major, minor)) == 0){
     end_op();
+    security_exit();
     return -1;
   }
   iunlockput(ip);
   end_op();
+  security_exit();
   return 0;
 }
 

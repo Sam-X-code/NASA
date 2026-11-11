@@ -4,6 +4,11 @@
 #include "mmu.h"
 #include "proc.h"
 #include "defs.h"
+#include "stat.h"
+#include "fs.h"
+#include "spinlock.h"
+#include "sleeplock.h"
+#include "file.h"
 #include "x86.h"
 #include "elf.h"
 
@@ -19,10 +24,12 @@ exec(char *path, char **argv)
   pde_t *pgdir, *oldpgdir;
   struct proc *curproc = myproc();
 
+  security_enter();
   begin_op();
 
   if((ip = namei(path)) == 0){
     end_op();
+    security_exit();
     cprintf("exec: fail\n");
     return -1;
   }
@@ -33,6 +40,9 @@ exec(char *path, char **argv)
   if(readi(ip, (char*)&elf, 0, sizeof(elf)) != sizeof(elf))
     goto bad;
   if(elf.magic != ELF_MAGIC)
+    goto bad;
+  if(ip->type == T_FILE && ip->trust == UNTRUSTED &&
+     (!security_context_available() || security_mark_tainted() < 0))
     goto bad;
 
   if((pgdir = setupkvm()) == 0)
@@ -101,6 +111,7 @@ exec(char *path, char **argv)
   curproc->tf->esp = sp;
   switchuvm(curproc);
   freevm(oldpgdir);
+  security_exit();
   return 0;
 
  bad:
@@ -110,5 +121,6 @@ exec(char *path, char **argv)
     iunlockput(ip);
     end_op();
   }
+  security_exit();
   return -1;
 }

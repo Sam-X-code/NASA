@@ -27,7 +27,8 @@ main(void)
   consoleinit();   // console hardware
   uartinit();      // serial port
   pinit();         // process table
-  tvinit();        // trap vectors
+  security_init();   // per-boot shared taint state
+  tvinit();          // trap vectors
   binit();         // buffer cache
   fileinit();      // file table
   ideinit();       // disk 
@@ -113,4 +114,3 @@ pde_t entrypgdir[NPDENTRIES] = {
 // Blank page.
 //PAGEBREAK!
 // Blank page.
-

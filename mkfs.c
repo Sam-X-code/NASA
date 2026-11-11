@@ -38,7 +38,7 @@ void wsect(uint, void*);
 void winode(uint, struct dinode*);
 void rinode(uint inum, struct dinode *ip);
 void rsect(uint sec, void *buf);
-uint ialloc(ushort type);
+uint ialloc(ushort type, ushort trust);
 void iappend(uint inum, void *p, int n);
 
 // convert to intel byte order
@@ -69,6 +69,7 @@ main(int argc, char *argv[])
 {
   int i, cc, fd;
   uint rootino, inum, off;
+  ushort trust = UNTRUSTED;
   struct dirent de;
   char buf[BSIZE];
   struct dinode din;
@@ -117,7 +118,7 @@ main(int argc, char *argv[])
   memmove(buf, &sb, sizeof(sb));
   wsect(1, buf);
 
-  rootino = ialloc(T_DIR);
+  rootino = ialloc(T_DIR, TRUSTED);
   assert(rootino == ROOTINO);
 
   bzero(&de, sizeof(de));
@@ -131,6 +132,14 @@ main(int argc, char *argv[])
   iappend(rootino, &de, sizeof(de));
 
   for(i = 2; i < argc; i++){
+    if(strcmp(argv[i], "-u") == 0){
+      trust = UNTRUSTED;
+      continue;
+    }
+    if(strcmp(argv[i], "-t") == 0){
+      trust = TRUSTED;
+      continue;
+    }
     assert(index(argv[i], '/') == 0);
 
     if((fd = open(argv[i], 0)) < 0){
@@ -145,7 +154,7 @@ main(int argc, char *argv[])
     if(argv[i][0] == '_')
       ++argv[i];
 
-    inum = ialloc(T_FILE);
+    inum = ialloc(T_FILE, trust);
 
     bzero(&de, sizeof(de));
     de.inum = xshort(inum);
@@ -224,13 +233,15 @@ rsect(uint sec, void *buf)
 }
 
 uint
-ialloc(ushort type)
+ialloc(ushort type, ushort trust)
 {
   uint inum = freeinode++;
   struct dinode din;
 
   bzero(&din, sizeof(din));
   din.type = xshort(type);
+  if(type == T_FILE)
+    din.major = xshort(trust);
   din.nlink = xshort(1);
   din.size = xint(0);
   winode(inum, &din);

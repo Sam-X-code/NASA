@@ -107,6 +107,36 @@ extern int sys_uptime(void);
 extern int sys_hello(void);
 extern int sys_effect(void);
 
+#ifdef EXEC_TRUST_TEST
+static int
+sys_exec_no_context_test(void)
+{
+  char *path, *argv[2];
+  struct proc *curproc = myproc();
+  struct agent_context *agent_ctx;
+  pde_t *pgdir;
+  uint sz, eip, esp;
+  int result;
+
+  if(argstr(0, &path) < 0)
+    return -1;
+
+  argv[0] = path;
+  argv[1] = 0;
+  agent_ctx = curproc->agent_ctx;
+  pgdir = curproc->pgdir;
+  sz = curproc->sz;
+  eip = curproc->tf->eip;
+  esp = curproc->tf->esp;
+  curproc->agent_ctx = 0;
+  result = exec(path, argv);
+  curproc->agent_ctx = agent_ctx;
+
+  return result < 0 && curproc->pgdir == pgdir && curproc->sz == sz &&
+         curproc->tf->eip == eip && curproc->tf->esp == esp ? 0 : -1;
+}
+#endif
+
 static int (*syscalls[])(void) = {
 [SYS_fork]    sys_fork,
 [SYS_exit]    sys_exit,
@@ -131,6 +161,9 @@ static int (*syscalls[])(void) = {
 [SYS_close]   sys_close,
 [SYS_hello]   sys_hello,
 [SYS_effect]  sys_effect,
+#ifdef EXEC_TRUST_TEST
+[SYS_exec_no_context_test] sys_exec_no_context_test,
+#endif
 };
 
 void

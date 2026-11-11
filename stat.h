@@ -7,5 +7,6 @@ struct stat {
   int dev;     // File system's disk device
   uint ino;    // Inode number
   short nlink; // Number of links to file
+  short trust; // TRUSTED or UNTRUSTED for regular files
   uint size;   // Size of file in bytes
 };

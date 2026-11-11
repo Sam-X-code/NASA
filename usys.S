@@ -31,3 +31,6 @@ SYSCALL(sleep)
 SYSCALL(uptime)
 SYSCALL(hello)
 SYSCALL(effect)
+#ifdef EXEC_TRUST_TEST
+SYSCALL(exec_no_context_test)
+#endif

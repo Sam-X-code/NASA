@@ -5,6 +5,9 @@
 #define ROOTINO 1  // root i-number
 #define BSIZE 512  // block size
 
+#define TRUSTED 1
+#define UNTRUSTED 2
+
 // Disk layout:
 // [ boot block | super block | log | inode blocks |
 //                                          free bit map | effect table | data blocks]
@@ -40,7 +43,7 @@ struct effect_entry{
 // On-disk inode structure
 struct dinode {
   short type;           // File type
-  short major;          // Major device number (T_DEV only)
+  short major;          // Major device number (T_DEV) or trust (T_FILE)
   short minor;          // Minor device number (T_DEV only)
   short nlink;          // Number of links to inode in file system
   uint size;            // Size of file (bytes)
@@ -66,4 +69,3 @@ struct dirent {
   ushort inum;
   char name[DIRSIZ];
 };
-

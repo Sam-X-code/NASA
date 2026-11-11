@@ -21,6 +21,7 @@ struct inode {
   short major;
   short minor;
   short nlink;
+  short trust;
   uint size;
   uint addrs[NDIRECT+1];
 };

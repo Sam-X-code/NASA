@@ -206,6 +206,8 @@ ialloc(uint dev, short type)
     if(dip->type == 0){  // a free inode
       memset(dip, 0, sizeof(*dip));
       dip->type = type;
+      if(type == T_FILE)
+        dip->major = UNTRUSTED;
       log_write(bp);   // mark it allocated on the disk
       brelse(bp);
       return iget(dev, inum);
@@ -228,7 +230,7 @@ iupdate(struct inode *ip)
   bp = bread(ip->dev, IBLOCK(ip->inum, sb));
   dip = (struct dinode*)bp->data + ip->inum%IPB;
   dip->type = ip->type;
-  dip->major = ip->major;
+  dip->major = ip->type == T_FILE ? ip->trust : ip->major;
   dip->minor = ip->minor;
   dip->nlink = ip->nlink;
   dip->size = ip->size;
@@ -302,6 +304,10 @@ ilock(struct inode *ip)
     dip = (struct dinode*)bp->data + ip->inum%IPB;
     ip->type = dip->type;
     ip->major = dip->major;
+    ip->trust = ip->type == T_FILE && dip->major == TRUSTED ?
+                TRUSTED : UNTRUSTED;
+    if(ip->type == T_FILE)
+      ip->major = 0;
     ip->minor = dip->minor;
     ip->nlink = dip->nlink;
     ip->size = dip->size;
@@ -445,6 +451,7 @@ stati(struct inode *ip, struct stat *st)
   st->ino = ip->inum;
   st->type = ip->type;
   st->nlink = ip->nlink;
+  st->trust = ip->type == T_FILE ? ip->trust : TRUSTED;
   st->size = ip->size;
 }
 
@@ -505,9 +512,19 @@ writei(struct inode *ip, char *src, uint off, uint n)
     brelse(bp);
   }
 
-  if(n > 0 && off > ip->size){
-    ip->size = off;
-    iupdate(ip);
+  if(n > 0){
+    int changed = 0;
+    if(ip->type == T_FILE && security_is_tainted() &&
+       ip->trust != UNTRUSTED){
+      ip->trust = UNTRUSTED;
+      changed = 1;
+    }
+    if(off > ip->size){
+      ip->size = off;
+      changed = 1;
+    }
+    if(changed)
+      iupdate(ip);
   }
   return n;
 }

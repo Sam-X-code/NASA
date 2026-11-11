@@ -25,6 +25,9 @@ int sleep(int);
 int uptime(void);
 int hello(void);
 int effect(unsigned long long key, int op, char * path, char * data, int n);
+#ifdef EXEC_TRUST_TEST
+int exec_no_context_test(char*);
+#endif
 
 // ulib.c
 int stat(const char*, struct stat*);

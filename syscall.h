@@ -22,3 +22,6 @@
 #define SYS_close  21
 #define SYS_hello  22
 #define SYS_effect 23
+#ifdef EXEC_TRUST_TEST
+#define SYS_exec_no_context_test 24
+#endif

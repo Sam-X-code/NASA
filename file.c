@@ -5,6 +5,7 @@
 #include "types.h"
 #include "defs.h"
 #include "param.h"
+#include "stat.h"
 #include "fs.h"
 #include "spinlock.h"
 #include "sleeplock.h"
@@ -96,17 +97,35 @@ filestat(struct file *f, struct stat *st)
 int
 fileread(struct file *f, char *addr, int n)
 {
-  int r;
+  int r, gated;
 
   if(f->readable == 0)
     return -1;
   if(f->type == FD_PIPE)
     return piperead(f->pipe, addr, n);
   if(f->type == FD_INODE){
+    gated = f->ip->type == T_FILE;
+    if(gated)
+      security_enter();
     ilock(f->ip);
-    if((r = readi(f->ip, addr, f->off, n)) > 0)
+    if(f->ip->type == T_FILE && f->ip->trust == UNTRUSTED &&
+       !security_context_available()){
+      iunlock(f->ip);
+      security_exit();
+      return -1;
+    }
+    if((r = readi(f->ip, addr, f->off, n)) > 0){
+      if(f->ip->type == T_FILE && f->ip->trust == UNTRUSTED &&
+         security_mark_tainted() < 0){
+        iunlock(f->ip);
+        security_exit();
+        return -1;
+      }
       f->off += r;
+    }
     iunlock(f->ip);
+    if(gated)
+      security_exit();
     return r;
   }
   panic("fileread");
@@ -132,6 +151,9 @@ filewrite(struct file *f, char *addr, int n)
     // might be writing a device like the console.
     int max = ((MAXOPBLOCKS-1-1-2) / 2) * 512;
     int i = 0;
+    int gated = f->ip->type == T_FILE;
+    if(gated)
+      security_enter();
     while(i < n){
       int n1 = n - i;
       if(n1 > max)
@@ -150,8 +172,9 @@ filewrite(struct file *f, char *addr, int n)
         panic("short filewrite");
       i += r;
     }
+    if(gated)
+      security_exit();
     return i == n ? n : -1;
   }
   panic("filewrite");
 }
-

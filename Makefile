@@ -17,6 +17,7 @@ OBJS = \
 	pipe.o\
 	proc.o\
 	sleeplock.o\
+	security.o\
 	spinlock.o\
 	string.o\
 	swtch.o\
@@ -80,6 +81,10 @@ OBJDUMP = $(TOOLPREFIX)objdump
 CFLAGS = -fno-pic -static -fno-builtin -fno-strict-aliasing -O2 -Wall -MD -ggdb -m32 -Werror -fno-omit-frame-pointer
 CFLAGS += $(shell $(CC) -fno-stack-protector -E -x c /dev/null >/dev/null 2>&1 && echo -fno-stack-protector)
 ASFLAGS = -m32 -gdwarf-2 -Wa,-divide
+ifdef EXEC_TRUST_TEST
+CFLAGS += -DEXEC_TRUST_TEST
+ASFLAGS += -DEXEC_TRUST_TEST
+endif
 # FreeBSD ld wants ``elf_i386_fbsd''
 LDFLAGS += -m $(shell $(LD) -V | grep elf_i386 2>/dev/null | head -n 1)
 
@@ -185,9 +190,12 @@ UPROGS=\
 	_mytest\
 	_hello_test\
 	_effect_test\
+	_security_reader\
+	_security_test\
+	_trusted_exec\
 
-fs.img: mkfs README $(UPROGS)
-	./mkfs fs.img README $(UPROGS)
+fs.img: mkfs README report.txt inbox.txt important.txt secdata.txt exec_probe.txt $(UPROGS) _untrusted_exec
+	./mkfs fs.img -t README report.txt -u inbox.txt -t important.txt secdata.txt exec_probe.txt $(UPROGS) -u _untrusted_exec
 
 -include *.d
 
