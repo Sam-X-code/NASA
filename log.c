@@ -5,6 +5,7 @@
 #include "sleeplock.h"
 #include "fs.h"
 #include "buf.h"
+#include "effect.h"
 
 // Simple logging that allows concurrent FS system calls.
 //
@@ -29,12 +30,40 @@
 //   ...
 // Log appends are synchronous.
 
+// Crash-injection state for crashat(n)
+int crash_target = 0;
+int crash_current = 0;
+
+int
+sys_crashat(void)
+{
+  int n;
+  if(argint(0, &n) < 0)
+    return -1;
+  crash_target = n;
+  crash_current = 0;
+  return 0;
+}
+
+static void
+check_crash(int phase_id, const char *msg)
+{
+  if(crash_target <= 0)
+    return;
+
+  crash_current++;
+
+  // Trigger if sequential count matches OR explicit phase ID matches
+  if(crash_current == crash_target || crash_target == phase_id){
+    int target = crash_target;
+    crash_target = 0; // prevent re-entry
+    cprintf("CRASH: %s (target=%d, event=%d)\n", msg, target, crash_current);
+    panic("crashat");
+  }
+}
+
 // Contents of the header block, used for both the on-disk header block
 // and to keep track in memory of logged block# before commit.
-
-extern int effect_crash_test;
-
-
 struct logheader {
   int n;
   int block[LOGSIZE];
@@ -82,6 +111,8 @@ install_trans(void)
     bwrite(dbuf);  // write dst to disk
     brelse(lbuf);
     brelse(dbuf);
+
+    check_crash(CRASH_INSTALL_MID, "in install_trans (installing home block)");
   }
 }
 
@@ -190,6 +221,8 @@ write_log(void)
     bwrite(to);  // write the log
     brelse(from);
     brelse(to);
+
+    check_crash(0, "in write_log (writing to log on disk)");
   }
 }
 
@@ -198,18 +231,25 @@ commit()
 {
   if (log.lh.n > 0) {
     write_log();     // Write modified blocks from cache to log
-    write_head();    // Write header to disk -- the real commit
 
-    // CRASH TEST: simulate a crash after commit point.
-    //panic("CRASH TEST: after commit header");
-    /*if(effect_crash_test){
-  effect_crash_test = 0;
-  panic("CRASH TEST: effect transaction committed");
-}*/
+    // Crash injection right before writing commit header (uncommitted)
+    check_crash(CRASH_COMMIT_BEFORE, "before write_head (commit header unwritten)");
+
+    write_head();    // Write header to disk -- the real commit point!
+
+    // Crash injection right after writing commit header (committed!)
+    check_crash(CRASH_COMMIT_AFTER, "after write_head (commit header written)");
 
     install_trans(); // Now install writes to home locations
+
+    // Crash injection after install_trans, before log clear
+    check_crash(CRASH_CLEAR_BEFORE, "after install_trans (before log clear)");
+
     log.lh.n = 0;
     write_head();    // Erase the transaction from the log
+
+    // Crash injection after log clear
+    check_crash(CRASH_CLEAR_AFTER, "after log clear write_head");
   }
 }
 
@@ -242,5 +282,7 @@ log_write(struct buf *b)
     log.lh.n++;
   b->flags |= B_DIRTY; // prevent eviction
   release(&log.lock);
-}
 
+  // Crash injection during log_write staging
+  check_crash(0, "during log_write staging");
+}

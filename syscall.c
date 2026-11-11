@@ -106,6 +106,7 @@ extern int sys_write(void);
 extern int sys_uptime(void);
 extern int sys_hello(void);
 extern int sys_effect(void);
+extern int sys_crashat(void);
 
 #ifdef EXEC_TRUST_TEST
 static int
@@ -161,6 +162,7 @@ static int (*syscalls[])(void) = {
 [SYS_close]   sys_close,
 [SYS_hello]   sys_hello,
 [SYS_effect]  sys_effect,
+[SYS_crashat] sys_crashat,
 #ifdef EXEC_TRUST_TEST
 [SYS_exec_no_context_test] sys_exec_no_context_test,
 #endif

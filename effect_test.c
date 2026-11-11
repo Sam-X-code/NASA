@@ -344,6 +344,12 @@ test_invalid_inputs(unsigned long long key)
     exit();
   }
 
+  // 8. crashat(0) disarm succeeds
+  if(crashat(0) != 0){
+    printf(1, "FAIL (crashat(0) failed)\n");
+    exit();
+  }
+
   printf(1, "PASS\n");
 }
 

@@ -193,6 +193,7 @@ UPROGS=\
 	_security_reader\
 	_security_test\
 	_trusted_exec\
+	_crashtest\
 
 fs.img: mkfs README report.txt inbox.txt important.txt secdata.txt exec_probe.txt $(UPROGS) _untrusted_exec
 	./mkfs fs.img -t README report.txt -u inbox.txt -t important.txt secdata.txt exec_probe.txt $(UPROGS) -u _untrusted_exec
