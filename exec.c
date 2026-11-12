@@ -16,7 +16,7 @@ int
 exec(char *path, char **argv)
 {
   char *s, *last;
-  int i, off;
+  int i, off, effect_authorized;
   uint argc, sz, sp, ustack[3+MAXARG+1];
   struct elfhdr elf;
   struct inode *ip;
@@ -35,6 +35,7 @@ exec(char *path, char **argv)
   }
   ilock(ip);
   pgdir = 0;
+  effect_authorized = effect_authorized_exec(ip);
 
   // Check ELF header
   if(readi(ip, (char*)&elf, 0, sizeof(elf)) != sizeof(elf))
@@ -109,6 +110,7 @@ exec(char *path, char **argv)
   curproc->sz = sz;
   curproc->tf->eip = elf.entry;  // main
   curproc->tf->esp = sp;
+  curproc->effect_authorized = effect_authorized;
   switchuvm(curproc);
   freevm(oldpgdir);
   security_exit();

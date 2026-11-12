@@ -1,14 +1,21 @@
 #include "types.h"
 #include "x86.h"
-#include "defs.h"
+#include "mmu.h"
 #include "param.h"
+#include "proc.h"
+#include "defs.h"
 #include "spinlock.h"
 #include "sleeplock.h"
 #include "fs.h"
 #include "buf.h"
+#include "file.h"
+#include "stat.h"
 
 static struct superblock effect_sb;
 static struct sleeplock effect_lock;
+static uint effectctl_dev;
+static uint effectctl_inum;
+static int effectctl_ready;
 
 
 #define EFFECT_ENTRIES_PER_BLOCK (BSIZE / sizeof(struct effect_entry))
@@ -66,11 +73,62 @@ effect_find(unsigned long long key, uint *free_index, unsigned long long * resul
 void
 effect_init(void)
 {
+  struct inode *ip;
+
   initsleeplock(&effect_lock, "effect");
   readsb(ROOTDEV, &effect_sb);
 
   if(effect_sb.effblocks == 0)
     panic("effect: no table blocks");
+
+  begin_op();
+  ip = namei("/effectctl");
+  if(ip == 0){
+    end_op();
+    panic("effect: missing effectctl");
+  }
+  ilock(ip);
+  if(ip->type != T_FILE || ip->trust != TRUSTED){
+    iunlockput(ip);
+    end_op();
+    panic("effect: effectctl must be trusted");
+  }
+  effectctl_dev = ip->dev;
+  effectctl_inum = ip->inum;
+  effectctl_ready = 1;
+  iunlockput(ip);
+  end_op();
+}
+
+int
+effect_authorized_exec(struct inode *ip)
+{
+  return effectctl_ready && ip != 0 && ip->type == T_FILE &&
+         ip->trust == TRUSTED && ip->dev == effectctl_dev &&
+         ip->inum == effectctl_inum;
+}
+
+int
+effect_authorized_process(void)
+{
+  struct proc *p = myproc();
+  return p != 0 && p->effect_authorized;
+}
+
+int
+effect_allowed_path(char *path)
+{
+  return strncmp(path, "/report.txt", sizeof("/report.txt")) == 0 ||
+         strncmp(path, "/inbox.txt", sizeof("/inbox.txt")) == 0 ||
+         strncmp(path, "/important.txt", sizeof("/important.txt")) == 0 ||
+         strncmp(path, "/agentlog.txt", sizeof("/agentlog.txt")) == 0;
+}
+
+int
+effect_protected_inode(struct inode *ip)
+{
+  return effectctl_ready && ip != 0 && ip->dev == effectctl_dev &&
+         ip->inum == effectctl_inum;
 }
 
 // Returns 0 if found, -1 if not found.

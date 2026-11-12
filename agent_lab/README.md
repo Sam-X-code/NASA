@@ -4,6 +4,23 @@ The agent runs deterministic demos by default. `MockBridge` is useful for host-s
 validation but has no kernel policy. The QEMU bridge keeps one guest shell alive;
 its `cat` and later `rm` commands execute in different child processes.
 
+The normal [main.py](./main.py) entry point enables the durable task journal by
+default. It stores one journal per canonical agent workspace at
+`$XDG_STATE_HOME/xv6-agent/<workspace-id>/tasks.jsonl`, or
+`~/.local/state/xv6-agent/<workspace-id>/tasks.jsonl` when `XDG_STATE_HOME` is
+unset. Startup recovers an unfinished task before running new work. The
+workspace ID is a SHA-256 digest of the canonical workspace path; pending
+records with a different or missing workspace identity are rejected. The
+journal is host-side and must remain on persistent host storage to survive a
+host restart.
+
+Journal use remains configurable in tests and other callers with
+`Agent(..., journal_path=...)`; when a custom path is used, pass a stable
+`workspace_id` as well if tasks must be isolated between workspaces. An
+unterminated final record that is valid JSON is retained and repaired with a
+newline; an invalid torn final fragment is discarded, while malformed
+newline-terminated records stop recovery with an error.
+
 ## Trust and taint policy
 
 `mkfs` stores regular-file trust in the unused `major` field of a regular inode;

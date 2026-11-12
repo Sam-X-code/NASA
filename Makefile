@@ -156,6 +156,14 @@ _%: %.o $(ULIB)
 	$(OBJDUMP) -S $@ > $*.asm
 	$(OBJDUMP) -t $@ | sed '1,/SYMBOL TABLE/d; s/ .* / /; /^$$/d' > $*.sym
 
+# effectctl is included in fs.img only as a small syscall transport utility.
+# Strip its debug sections to avoid exhausting the compact xv6 test image.
+_effectctl: effectctl.o $(ULIB)
+	$(LD) $(LDFLAGS) -N -e main -Ttext 0 -o $@ $^
+	$(OBJCOPY) --strip-debug $@
+	$(OBJDUMP) -S $@ > effectctl.asm
+	$(OBJDUMP) -t $@ | sed '1,/SYMBOL TABLE/d; s/ .* / /; /^$$/d' > effectctl.sym
+
 _forktest: forktest.o $(ULIB)
 	# forktest has less library code linked in - needs to be small
 	# in order to be able to max out the proc table.
@@ -190,13 +198,15 @@ UPROGS=\
 	_mytest\
 	_hello_test\
 	_effect_test\
+	_effectctl\
+	_effect_auth_test\
 	_security_reader\
 	_security_test\
 	_trusted_exec\
 	_crashtest\
 
-fs.img: mkfs README report.txt inbox.txt important.txt secdata.txt exec_probe.txt $(UPROGS) _untrusted_exec
-	./mkfs fs.img -t README report.txt -u inbox.txt -t important.txt secdata.txt exec_probe.txt $(UPROGS) -u _untrusted_exec
+fs.img: mkfs README report.txt inbox.txt important.txt secdata.txt exec_probe.txt $(UPROGS) _untrusted_exec _untrusted_effect_auth_test
+	./mkfs fs.img -t README report.txt -u inbox.txt -t important.txt secdata.txt exec_probe.txt $(UPROGS) -u _untrusted_exec -u _untrusted_effect_auth_test
 
 -include *.d
 

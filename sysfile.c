@@ -136,6 +136,12 @@ sys_link(void)
   }
 
   ilock(ip);
+  if(effect_protected_inode(ip)){
+    iunlockput(ip);
+    end_op();
+    security_exit();
+    return -1;
+  }
   if(ip->type == T_DIR){
     iunlockput(ip);
     end_op();
@@ -221,6 +227,10 @@ sys_unlink(void)
   if((ip = dirlookup(dp, name, &off)) == 0)
     goto bad;
   ilock(ip);
+  if(effect_protected_inode(ip)){
+    iunlockput(ip);
+    goto bad;
+  }
 
   if(ip->nlink < 1)
     panic("unlink: nlink < 1");
@@ -299,6 +309,58 @@ create(char *path, short type, short major, short minor)
   return ip;
 }
 
+static int
+valid_effect_utf8(char *data, int n)
+{
+  int i, c, c1, c2, c3;
+
+  for(i = 0; i < n; ){
+    c = (uchar)data[i];
+    if(c >= 1 && c <= 0x7f){
+      i++;
+      continue;
+    }
+    if(c >= 0xc2 && c <= 0xdf){
+      if(i + 1 >= n)
+        return 0;
+      c1 = (uchar)data[i + 1];
+      if(c1 < 0x80 || c1 > 0xbf)
+        return 0;
+      i += 2;
+      continue;
+    }
+    if(c >= 0xe0 && c <= 0xef){
+      if(i + 2 >= n)
+        return 0;
+      c1 = (uchar)data[i + 1];
+      c2 = (uchar)data[i + 2];
+      if(c2 < 0x80 || c2 > 0xbf ||
+         (c == 0xe0 && (c1 < 0xa0 || c1 > 0xbf)) ||
+         (c == 0xed && (c1 < 0x80 || c1 > 0x9f)) ||
+         (c != 0xe0 && c != 0xed && (c1 < 0x80 || c1 > 0xbf)))
+        return 0;
+      i += 3;
+      continue;
+    }
+    if(c >= 0xf0 && c <= 0xf4){
+      if(i + 3 >= n)
+        return 0;
+      c1 = (uchar)data[i + 1];
+      c2 = (uchar)data[i + 2];
+      c3 = (uchar)data[i + 3];
+      if(c2 < 0x80 || c2 > 0xbf || c3 < 0x80 || c3 > 0xbf ||
+         (c == 0xf0 && (c1 < 0x90 || c1 > 0xbf)) ||
+         (c == 0xf4 && (c1 < 0x80 || c1 > 0x8f)) ||
+         (c != 0xf0 && c != 0xf4 && (c1 < 0x80 || c1 > 0xbf)))
+        return 0;
+      i += 4;
+      continue;
+    }
+    return 0;
+  }
+  return 1;
+}
+
 
 int
 sys_effect(void)
@@ -315,11 +377,15 @@ sys_effect(void)
      argint(5, &n) < 0)
     return -1;
 
-  if(n < 0 || n > BSIZE)
+  if(n < 0 || n > 20 ||
+     (op == EFFECT_CREATE && n != 0) ||
+     (op == EFFECT_APPEND && (n < 1 || n > 20)))
     return -1;
 
   data = 0;
   if(n > 0 && argptr(4, &data, n) < 0)
+    return -1;
+  if(op == EFFECT_APPEND && !valid_effect_utf8(data, n))
     return -1;
 
   key = ((unsigned long long)(uint)keyhi << 32) | (uint)keylo;
@@ -331,6 +397,10 @@ sys_effect(void)
     return -1;
 
   security_enter();
+  if(!effect_authorized_process() || !effect_allowed_path(path)){
+    security_exit();
+    return -1;
+  }
 
   /*
    * Phase 4: Transaction boundaries & concurrency.
@@ -439,12 +509,21 @@ sys_open(void)
       end_op();
       return -1;
     }
+
     ilock(ip);
     if(ip->type == T_DIR && omode != O_RDONLY){
       iunlockput(ip);
       end_op();
       return -1;
     }
+  }
+
+  if((omode & (O_WRONLY|O_RDWR)) && effect_protected_inode(ip)){
+    iunlockput(ip);
+    end_op();
+    if(omode & O_CREATE)
+      security_exit();
+    return -1;
   }
 
   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){

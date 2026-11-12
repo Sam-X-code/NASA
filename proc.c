@@ -90,6 +90,7 @@ found:
   p->state = EMBRYO;
   p->pid = nextpid++;
   p->agent_ctx = 0;
+  p->effect_authorized = 0;
 
   release(&ptable.lock);
 

@@ -143,6 +143,8 @@ filewrite(struct file *f, char *addr, int n)
   if(f->type == FD_PIPE)
     return pipewrite(f->pipe, addr, n);
   if(f->type == FD_INODE){
+    if(effect_protected_inode(f->ip))
+      return -1;
     // write a few blocks at a time to avoid exceeding
     // the maximum log transaction size, including
     // i-node, indirect block, allocation blocks,

@@ -57,6 +57,10 @@ int             writei(struct inode*, char*, uint, uint);
 
 //exactly once effect table
 void            effect_init(void);
+int             effect_authorized_exec(struct inode*);
+int             effect_authorized_process(void);
+int             effect_allowed_path(char*);
+int             effect_protected_inode(struct inode*);
 int             effect_lookup(unsigned long long,unsigned long long*);
 int             effect_insert(unsigned long long,unsigned long long);
 void            effect_tx_begin(void);
