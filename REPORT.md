@@ -212,7 +212,50 @@ Summary: 15 / 15 crash points passed. Exactly-once semantics verified across all
 
 ---
 
-## 8. Conclusion
+## 8. Challenges Faced & Engineering Solutions
+
+Building an atomic, crash-consistent system call inside an OS kernel and verifying it across automated QEMU crash-reboot sweeps surfaced several subtle systems and tooling challenges:
+
+### 8.1 Passing 64-Bit Keys Across a 32-Bit Syscall ABI
+- Challenge: xv6 targets 32-bit x86, where argint() fetches 32-bit integers from the user stack frame. Because unsigned long long is 64 bits wide, passing key as the first parameter consumed two 32-bit stack slots (arguments 0 and 1), shifting all subsequent arguments (op, path, data, n) by one offset. Misaligned offsets caused invalid pointer and length reads inside sys_effect().
+- Solution: Explicitly read the lower and upper 32-bit halves at argument indices 0 and 1, reconstructed the 64-bit key using ((unsigned long long)(uint)keyhi << 32) | (uint)keylo, and shifted op, path, data, and n to argument indices 2, 3, 4, and 5.
+
+### 8.2 Split-Transaction Crash Windows & TOCTOU Concurrency Races
+- Challenge: Early prototypes executed lookup, file mutation, and table insertion separately. This created three critical failure modes:
+  1. Crash inconsistency: A crash between committing the file mutation and committing the effect entry would allow a replay to execute the append twice (producing "ABB").
+  2. Time-of-check to time-of-use (TOCTOU) race: Two concurrent processes invoking effect() with the same key could both observe a table miss, execute the append simultaneously, and violate exactly-once semantics.
+  3. Lock and transaction leaks: Returning early on validation failures (e.g., missing file or full table) risked leaving inode locks or open WAL transactions active.
+- Solution: Wrapped the entire lookup -> mutation -> pre-flight space check -> insert -> commit sequence inside a single begin_op() / end_op() transaction guarded by a continuous sleeplock (effect_lock via effect_tx_begin() and effect_tx_end()). Ensured every error branch cleanly releases inode locks via iunlockput() before closing the transaction.
+
+### 8.3 Persistent Effect Table Collisions Across Test Runs
+- Challenge: Because the effect table persists on disk across reboots (sectors 59-68), re-running functional or crash tests against an existing fs.img caused confusing failures where files remained empty (len = 0) or unchanged (len = 1). Even after unlinking the target file, the old key remained saved in the on-disk effect table, causing subsequent effect() calls to hit the cache, return immediately, and skip both file mutations and WAL crash hooks. Additionally, running make fs.img inside crash_test.sh skipped rebuilding when fs.img was newer than source binaries, copying a dirty disk image into fs.img.clean.
+- Solution:
+  1. In effect_test.c, dynamically seeded test keys per execution using uptime() so repeated runs never collide with prior disk state.
+  2. In crash_test.sh, explicitly deleted fs.img prior to make fs.img to guarantee a completely zeroed effect table in fs.img.clean.
+  3. In crashtest.c, derived isolated per-point keys (0xCAFE0000ULL + point) shared identically between run and replay so crash points never cross-contaminate.
+
+### 8.4 Freestanding User-Space Build Constraints
+- Challenge: xv6 user-space binaries compile with -nostdinc and -fno-builtin, lacking standard C library headers such as string.h and functions like memcmp(). Referencing standard headers triggered -Werror compilation failures.
+- Solution: Implemented a freestanding memcmp() helper directly inside effect_test.c to keep test binaries completely self-contained.
+
+### 8.5 Dropped UART Keystrokes & Premature EOF in QEMU Automation
+- Challenge: Automating 15 crash-and-reboot cycles in crash_test.sh revealed three automation and harness issues when piping commands into headless QEMU:
+  1. Dropped characters during boot: Waiting a fixed 0.8 seconds before piping input occasionally sent characters while SeaBIOS or xv6 UART initialization was still resetting, dropping the leading 'c' of "crashtest replay" and causing "exec rashtest failed".
+  2. Premature EOF: Exiting the piped subshell immediately after echo closed stdin, causing xv6 sh to read EOF in getcmd() and terminate before the command finished.
+  3. Silent failure masking in harness: run_crash_cycle() always returned exit status 0, causing the summary counter to report 15 / 15 passed even when individual tests failed.
+- Solution: Replaced static sleeps with a named pipe (FIFO) held open on file descriptor 3, polled QEMU serial output until the xv6 shell prompt ("$ ") appeared before transmitting the command, detected completion markers ("panic:", "CRASH:", "CRASH_TEST_RESULT:") to terminate QEMU promptly, and updated run_crash_cycle() to return 1 on verification failure.
+
+### 8.6 Covering Both Sides of the Atomic Commit Point
+- Challenge: Placing a single panic hook inside log_write() only tests uncommitted in-memory staging and fails to prove WAL recovery correctness after commit.
+- Solution: Instrumented log.c with both an incrementing event counter (crash_current) and explicit named phase hooks (CRASH_COMMIT_BEFORE, CRASH_COMMIT_AFTER, CRASH_INSTALL_MID, CRASH_CLEAR_BEFORE, CRASH_CLEAR_AFTER) across log_write(), write_log(), write_head(), and install_trans().
+
+### 8.7 Cross-Platform Windows / WSL Tooling & Line-Ending Issues
+- Challenge: Editing files on Windows while compiling and running QEMU inside Ubuntu WSL introduced CRLF (\r\n) line endings and UTF-8 BOMs into build scripts (breaking sign.pl, vectors.pl, and bash execution of crash_test.sh), and generated ephemeral artifacts (crash_logs/, fs.img.clean, compiled user-program binaries) that interfered with Git tracking.
+- Solution: Converted all build and test scripts to strict Unix LF endings without BOMs and updated .gitignore to exclude crash_logs/ and fs.img.clean.
+
+---
+
+## 9. Conclusion
 
 By coupling an on-disk effect table directly with xv6 Write-Ahead Logging subsystem and holding an atomic lock boundary across lookup, file mutation, table insertion, and commit:
 1. Atomicity: Either both the filesystem mutation and the effect record commit, or neither does.
